@@ -1,20 +1,15 @@
 # GoodShort Auto Next Episode
 
+[![license](https://img.shields.io/github/license/poorloading/goodshort-auto-next-episode)](LICENSE)
+[![last commit](https://img.shields.io/github/last-commit/poorloading/goodshort-auto-next-episode)](https://github.com/poorloading/goodshort-auto-next-episode/commits/main)
+[![Tampermonkey](https://img.shields.io/badge/userscript-Tampermonkey-orange)](GoodShort-Auto-Next-Episode.user.js)
+
 A Tampermonkey userscript that plays the next episode of a GoodShort series by
 itself. When the current episode ends, it opens the following one — no hunting
 for the next button, no losing your place when a short drama ends every ninety
 seconds.
 
 Works on the `dramafren.org` and `shorttw.live` mirrors.
-
-> **This repository is private.** Two consequences worth knowing up front:
->
-> - **Install is manual only.** There's no one-click raw install link, because
->   `raw.githubusercontent.com` won't serve files from a private repo to an
->   anonymous installer. Paste the script in by hand (steps below).
-> - **No auto-update.** The script has no `@updateURL` / `@downloadURL` by
->   design — pointing them at a private raw URL would fail silently, so you'd
->   think you were up to date when you weren't. Re-paste after a `git pull`.
 
 ---
 
@@ -51,6 +46,19 @@ Works on the `dramafren.org` and `shorttw.live` mirrors.
 
 ## Installation
 
+### Option A — one-click (recommended)
+
+1. Install a userscript manager: [Tampermonkey](https://www.tampermonkey.net/)
+   or [Violentmonkey](https://violentmonkey.github.io/).
+2. Open the raw script and your manager will offer to install it:
+   **[Install GoodShort-Auto-Next-Episode.user.js](https://raw.githubusercontent.com/poorloading/goodshort-auto-next-episode/main/GoodShort-Auto-Next-Episode.user.js)**
+3. Confirm the install, then open a GoodShort watch page — it runs automatically.
+
+Because the script declares `@updateURL` / `@downloadURL`, your manager will
+check this repository for updates on its own.
+
+### Option B — manual
+
 1. Install [Tampermonkey](https://www.tampermonkey.net/) or
    [Violentmonkey](https://violentmonkey.github.io/).
 2. Open the extension → **Dashboard** → **+** (create a new script).
@@ -58,7 +66,8 @@ Works on the `dramafren.org` and `shorttw.live` mirrors.
    [`GoodShort-Auto-Next-Episode.user.js`](GoodShort-Auto-Next-Episode.user.js).
 4. Save (`Ctrl`/`Cmd` + `S`) and reload the site.
 
-There's no one-click install and no auto-update; see the note at the top for why.
+> **Note:** manual installs are not auto-updated unless you keep the
+> `@updateURL` header intact.
 
 ## Requirements
 
@@ -150,7 +159,6 @@ on access, and that shouldn't take the script down with it.
   restarts numbering, the fallback URL will be wrong — though the site's own next
   link, when present, is always preferred and handles that correctly.
 - **Desktop web only.** Mobile apps can't run userscripts.
-- **No auto-update.** Deliberate, for a private repo. Re-paste after pulling.
 - **Site markup changes.** If the page stops rendering a next link and the URL
   scheme changes too, both paths break. That's what `DEBUG = true` is for.
 
@@ -182,6 +190,13 @@ node test/auto-next.test.js
 - starting switched off when the stored preference says so
 
 ## Changelog
+
+### v1.1.1
+
+- Added `@updateURL` / `@downloadURL`, so installed copies auto-update. This
+  needed the repository to be public — a private raw URL can't be fetched by an
+  anonymous update check, which would have failed silently.
+- Added `@homepageURL` / `@supportURL` and linked the namespace to the repo.
 
 ### v1.1.0
 

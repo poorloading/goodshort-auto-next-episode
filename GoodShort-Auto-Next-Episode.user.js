@@ -1,10 +1,14 @@
 // ==UserScript==
 // @name         GoodShort Auto Next Episode
-// @namespace    poorloading-goodshort-autonext
-// @version      1.1.0
+// @namespace    https://github.com/poorloading/goodshort-auto-next-episode
+// @version      1.1.1
 // @description  Automatically plays the next episode when the current video ends.
 // @author       poorloading
 // @license      MIT
+// @homepageURL  https://github.com/poorloading/goodshort-auto-next-episode
+// @supportURL   https://github.com/poorloading/goodshort-auto-next-episode/issues
+// @updateURL    https://raw.githubusercontent.com/poorloading/goodshort-auto-next-episode/main/GoodShort-Auto-Next-Episode.user.js
+// @downloadURL  https://raw.githubusercontent.com/poorloading/goodshort-auto-next-episode/main/GoodShort-Auto-Next-Episode.user.js
 // @match        https://*.dramafren.org/*
 // @match        http://*.dramafren.org/*
 // @match        https://*.shorttw.live/*
@@ -220,5 +224,5 @@
     scheduleAttach();
   });
 
-  log('v1.1.0 ready');
+  log('v1.1.1 ready');
 })();
