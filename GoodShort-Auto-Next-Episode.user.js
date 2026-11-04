@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         GoodShort Auto Next Episode
 // @namespace    https://github.com/poorloading/goodshort-auto-next-episode
-// @version      1.4.0
+// @version      1.5.0
 // @description  Automatically plays the next episode when the current video ends.
 // @author       poorloading
 // @license      MIT
@@ -29,10 +29,13 @@
   const QUALITY_RETRY_MS = 400; // how often to look for the quality control
   const QUALITY_MAX_TRIES = 15; // ~6s of looking, then give up quietly
   const KEY = 'goodshort-auto-next-enabled';
+  const FS_KEY = 'goodshort-auto-fullscreen-enabled';
 
   // The player's own quality menu. Two elements, driven like a user would.
   const QUALITY_TRIGGER = 'button[aria-label="Quality"]';
   const QUALITY_OPTION = 'button.quality-option';
+  const PLAYER_SECTION = 'section.phone-player';
+  const SWIPER = '.watch-swiper';
 
   const log = (...args) => { if (DEBUG) console.log('[auto-next]', ...args); };
 
@@ -53,50 +56,99 @@
     }
   }
 
+  function readFullscreen() {
+    try {
+      return localStorage.getItem(FS_KEY) !== 'off';
+    } catch (_) {
+      return true;
+    }
+  }
+
+  function writeFullscreen(value) {
+    try {
+      localStorage.setItem(FS_KEY, value ? 'on' : 'off');
+    } catch (_) {
+      /* as above */
+    }
+  }
+
   let enabled = readEnabled();
+  let fullscreenWanted = readFullscreen();
   const attachedVideos = new WeakSet();
-  let status;
+  let nextButton;
+  let fsButton;
   let navigating = false;
   let attachTimer = null;
   let messageTimer = null;
   let qualityTries = 0;
   let qualitySettled = false;
   let qualityPanelOpened = false;
+  let fsArmed = false;
 
-  // --- toggle button -------------------------------------------------------
+  // --- toggles -------------------------------------------------------------
 
-  function makeToggle() {
+  const BUTTON_CSS = 'position:fixed;z-index:2147483647;right:14px;padding:9px 12px;border:0;border-radius:8px;background:#191919;color:#fff;font:13px/1.2 sans-serif;box-shadow:0 2px 12px #0006;cursor:pointer';
+
+  function makeButton(id, title, bottom) {
+    const button = document.createElement('button');
+    button.id = id;
+    button.type = 'button';
+    button.title = title;
+    button.style.cssText = BUTTON_CSS + ';bottom:' + bottom + 'px';
+    document.body.appendChild(button);
+    return button;
+  }
+
+  function makeToggles() {
     if (document.getElementById('gs-auto-next-toggle')) return;
     if (!document.body) return; // document-idle, but be defensive
 
-    const button = document.createElement('button');
-    button.id = 'gs-auto-next-toggle';
-    button.type = 'button';
-    button.title = 'Toggle automatic next episode';
-    button.style.cssText = 'position:fixed;z-index:2147483647;right:14px;bottom:14px;padding:9px 12px;border:0;border-radius:8px;background:#191919;color:#fff;font:13px/1.2 sans-serif;box-shadow:0 2px 12px #0006;cursor:pointer';
-    button.addEventListener('click', () => {
+    nextButton = makeButton('gs-auto-next-toggle', 'Toggle automatic next episode', 14);
+    nextButton.addEventListener('click', () => {
       enabled = !enabled;
       writeEnabled(enabled);
-      updateButton();
-      log('auto-next', enabled ? 'enabled' : 'disabled');
+      updateToggles();
+      log('auto-next ' + (enabled ? 'enabled' : 'disabled'));
     });
 
-    document.body.appendChild(button);
-    status = button;
-    updateButton();
+    fsButton = makeButton('gs-auto-fs-toggle', 'Toggle automatic fullscreen', 58);
+    fsButton.addEventListener('click', () => {
+      fullscreenWanted = !fullscreenWanted;
+      writeFullscreen(fullscreenWanted);
+      updateToggles();
+      log('auto-fullscreen ' + (fullscreenWanted ? 'enabled' : 'disabled'));
+      // Turning it on while already watching should take effect straight away,
+      // which only a gesture can do.
+      if (fullscreenWanted) armFullscreen();
+    });
+
+    updateToggles();
   }
 
-  function updateButton(message) {
-    if (!status) return;
+  function paint(button, on, label) {
+    if (!button) return;
+    button.textContent = label + ': ' + (on ? 'ON' : 'OFF');
+    button.style.background = on ? '#176b45' : '#555';
+  }
 
+  function updateToggles(message) {
     clearTimeout(messageTimer);
-    status.textContent = message || `Auto-next: ${enabled ? 'ON' : 'OFF'} (click to toggle)`;
-    status.style.background = enabled ? '#176b45' : '#555';
 
-    // A transient status shouldn't sit there forever.
-    if (message) {
-      messageTimer = setTimeout(() => updateButton(), MESSAGE_MS);
+    if (nextButton) {
+      if (message) {
+        nextButton.textContent = message;
+        nextButton.style.background = '#8a6d1f';
+        messageTimer = setTimeout(() => updateToggles(), MESSAGE_MS);
+      } else {
+        paint(nextButton, enabled, 'Auto-next');
+      }
     }
+    paint(fsButton, fullscreenWanted, 'Auto-fullscreen');
+  }
+
+  // Status messages belong on the auto-next button; nothing else uses them.
+  function updateButton(message) {
+    updateToggles(message);
   }
 
   // --- quality -------------------------------------------------------------
@@ -165,6 +217,85 @@
     qualityPanelOpened = false; // the player closes the panel on selection
   }
 
+  // --- fullscreen ----------------------------------------------------------
+
+  // Browsers only grant fullscreen on a fresh user gesture, so this can never
+  // be silent: it arms a one-shot listener and enters fullscreen on the next
+  // click, key press or tap.
+  function armFullscreen() {
+    if (!fullscreenWanted || document.fullscreenElement || fsArmed) return;
+    // The toggle is visible on every page of a mirror; only watch pages have a
+    // player worth going fullscreen for.
+    if (!isWatchPage(new URL(location.href))) return;
+    fsArmed = true;
+
+    const enter = () => {
+      document.removeEventListener('pointerdown', enter, true);
+      document.removeEventListener('keydown', enter, true);
+      document.removeEventListener('touchstart', enter, true);
+      fsArmed = false;
+
+      if (!fullscreenWanted || document.fullscreenElement) return;
+      const player = document.querySelector(PLAYER_SECTION) || document.documentElement;
+      if (!player.requestFullscreen) return;
+
+      const attempt = player.requestFullscreen();
+      if (attempt && attempt.catch) {
+        attempt.catch((error) => log('fullscreen refused:', error.name));
+      }
+      log('entering fullscreen');
+    };
+
+    document.addEventListener('pointerdown', enter, true);
+    document.addEventListener('keydown', enter, true);
+    document.addEventListener('touchstart', enter, true);
+    log('auto-fullscreen armed');
+  }
+
+  // --- advancing in place --------------------------------------------------
+
+  // Every episode is a slide in one swiper, so stepping it moves to the next
+  // episode without a page load. That matters beyond speed: a navigation always
+  // drops you out of fullscreen, and no script can put you back without another
+  // gesture.
+  function advanceInPlace() {
+    const element = document.querySelector(SWIPER);
+    const swiper = element && element.swiper;
+    if (!swiper || typeof swiper.slideNext !== 'function') return false;
+
+    const total = swiper.slides ? swiper.slides.length : 0;
+    if (total && swiper.activeIndex >= total - 1) {
+      couldNotAdvance();
+      return true; // handled: don't guess a URL past the end
+    }
+
+    navigating = true;
+    updateButton('Episode ended — loading next…');
+
+    // A new episode means a new <video>, back at the player's default
+    // rendition, so quality has to be re-applied.
+    qualitySettled = false;
+    qualityTries = 0;
+    qualityPanelOpened = false;
+
+    log('advancing in place to slide ' + (swiper.activeIndex + 1));
+    swiper.slideNext();
+
+    // The slide and its player take a moment to swap in.
+    setTimeout(() => {
+      navigating = false;
+      applyMaxQuality();
+      armFullscreen();
+    }, 1200);
+
+    return true;
+  }
+
+  function couldNotAdvance() {
+    updateButton('Last episode — nothing to advance to');
+    log('no next episode available');
+  }
+
   // --- watch pages ---------------------------------------------------------
 
   // Two URL shapes are in use across the mirrors:
@@ -217,6 +348,10 @@
     const episode = episodeOf(url);
     if (episode === null) return;
 
+    // In place first: same page, so fullscreen survives. Only fall back to a
+    // navigation when the page has no swiper to drive.
+    if (advanceInPlace()) return;
+
     // Prefer the page's own link, which knows about numbering quirks and any
     // per-episode path changes. Otherwise bump ?ep= in place: everything else
     // in the URL is left alone, so ?lang= and the path survive untouched.
@@ -258,8 +393,17 @@
     document.addEventListener('touchstart', restore, true);
   }
 
+  // Auto-play is attempted once per piece of media, not on every attach pass.
+  // Without this, the page's constant DOM churn re-played the video a moment
+  // after the user paused it.
+  const playAttempts = new WeakMap();
+
   function tryPlay(video) {
     if (!enabled || !video.paused || video.readyState < 2) return;
+
+    const media = video.currentSrc || video.src || '';
+    if (playAttempts.get(video) === media) return; // already had its go
+    playAttempts.set(video, media);
 
     const attempt = video.play();
     if (!attempt || typeof attempt.catch !== 'function') return;
@@ -274,7 +418,7 @@
   }
 
   function attachVideo() {
-    makeToggle();
+    makeToggles();
 
     const page = new URL(location.href);
     if (!isWatchPage(page)) {
@@ -288,6 +432,9 @@
     // Independent of the auto-next toggle: turning off auto-advance shouldn't
     // drop you back to a lower rendition.
     applyMaxQuality();
+
+    // Fullscreen can't be granted without a gesture, so arm it and wait.
+    armFullscreen();
 
     if (!enabled) return;
 
@@ -321,7 +468,7 @@
 
   // --- init ----------------------------------------------------------------
 
-  makeToggle();
+  makeToggles();
   attachVideo();
 
   // Debounced: this page mutates constantly, and a full pass per mutation is
@@ -341,5 +488,5 @@
     scheduleAttach();
   });
 
-  log('v1.4.0 ready on ' + location.hostname);
+  log('v1.5.0 ready on ' + location.hostname);
 })();

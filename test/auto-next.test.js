@@ -19,18 +19,59 @@ function createPage(options = {}) {
     const links = options.links || [];
     const store = new Map();
     if (options.enabled === false) store.set('goodshort-auto-next-enabled', 'off');
+    if (options.fullscreen === false) store.set('goodshort-auto-fullscreen-enabled', 'off');
 
     const timers = [];
     let nextTimer = 1;
     const appended = [];
     const location = { href: options.href || WATCH };
 
+    // Listener registries, so a test can deliver the gesture a browser insists
+    // on before it will grant fullscreen, and the events the script waits for.
+    const docHandlers = new Map();
+    const winHandlers = new Map();
+
+    function addTo(map, name, fn) {
+        if (!map.has(name)) map.set(name, []);
+        map.get(name).push(fn);
+    }
+
+    function removeFrom(map, name, fn) {
+        const list = map.get(name);
+        const i = list ? list.indexOf(fn) : -1;
+        if (i >= 0) list.splice(i, 1);
+    }
+
+    function fireOn(map, name) {
+        // Copy first: a one-shot handler removes itself while running.
+        [...(map.get(name) || [])].forEach(fn => fn({ type: name }));
+    }
+
+    // Fullscreen: record which element was asked to go fullscreen, and keep
+    // document.fullscreenElement honest so the script's guards behave.
+    let fullscreenElement = null;
+    const fullscreenRequests = [];
+
+    function fullscreenTarget(name) {
+        return {
+            name,
+            requestFullscreen() {
+                fullscreenRequests.push(name);
+                fullscreenElement = this;
+                return Promise.resolve();
+            },
+        };
+    }
+
+    const documentElement = fullscreenTarget('documentElement');
+    const playerSection = options.noPlayer ? null : fullscreenTarget('player');
+
     // The player's quality menu: a trigger that toggles a panel of options.
     // Modelled so the "pick the highest rendition" logic is actually exercised.
     const qualityLabels = options.quality || null;
     let activeQuality = options.activeQuality || null;
     let panelOpen = false;
-    let selectedQuality = null;
+    const selections = [];
 
     const qualityOptions = (qualityLabels || []).map(label => ({
         tagName: 'BUTTON',
@@ -38,7 +79,7 @@ function createPage(options = {}) {
         classList: { contains: cls => cls === 'active' && label === activeQuality },
         click() {
             activeQuality = label;
-            selectedQuality = label;
+            selections.push(label);
             panelOpen = false;
         },
     }));
@@ -47,9 +88,36 @@ function createPage(options = {}) {
         ? { tagName: 'BUTTON', click() { panelOpen = !panelOpen; } }
         : null;
 
+    // The episode carousel: one slide per episode, advanced without a reload.
+    // That is the whole point of advancing in place on a real page, so the
+    // stub has to expose the same shape the script drives.
+    // dropQualityOnAdvance models the player loading the new episode at its
+    // default rendition, which is what makes "quality is re-applied" testable.
+    const swiperConfig = options.swiper || null;
+    let activeIndex = swiperConfig ? (swiperConfig.activeIndex || 0) : 0;
+    let slideNextCalls = 0;
+
+    const swiper = swiperConfig
+        ? {
+            slides: new Array(swiperConfig.slides || 0).fill(null),
+            get activeIndex() { return activeIndex; },
+            slideNext() {
+                slideNextCalls++;
+                activeIndex += 1;
+                if (swiperConfig.dropQualityOnAdvance) {
+                    activeQuality = swiperConfig.fallbackQuality || '720p';
+                    panelOpen = false;
+                }
+            },
+        }
+        : null;
+
+    const swiperElement = swiper ? { swiper } : null;
+
     const document = {
         body: { appendChild(el) { appended.push(el); } },
-        documentElement: {},
+        documentElement,
+        get fullscreenElement() { return fullscreenElement; },
         getElementById(id) {
             return appended.find(el => el.id === id) || null;
         },
@@ -75,16 +143,23 @@ function createPage(options = {}) {
         querySelector(selector) {
             if (selector === 'button[aria-label="Quality"]') return qualityTrigger;
             if (selector === 'video') return videos[0] || null;
+            if (selector === 'section.phone-player') return playerSection;
+            if (selector === '.watch-swiper') return swiperElement;
             return null;
         },
-        addEventListener() {},
-        removeEventListener() {},
+        addEventListener(name, fn) { addTo(docHandlers, name, fn); },
+        removeEventListener(name, fn) { removeFrom(docHandlers, name, fn); },
+    };
+
+    const windowStub = {
+        addEventListener(name, fn) { addTo(winHandlers, name, fn); },
+        removeEventListener(name, fn) { removeFrom(winHandlers, name, fn); },
     };
 
     const sandbox = {
         document,
         location,
-        window: { addEventListener() {} },
+        window: windowStub,
         URL,
         localStorage: {
             getItem: key => (store.has(key) ? store.get(key) : null),
@@ -107,14 +182,27 @@ function createPage(options = {}) {
         store,
         videos,
         toggle: () => document.getElementById('gs-auto-next-toggle'),
+        fsToggle: () => document.getElementById('gs-auto-fs-toggle'),
         quality: {
-            get selected() { return selectedQuality; },
+            get selected() { return selections.length ? selections[selections.length - 1] : null; },
+            get selections() { return selections.slice(); },
             get active() { return activeQuality; },
             get panelOpen() { return panelOpen; },
             get optionsAvailable() { return qualityOptions.length > 0; },
         },
-        // Timers can schedule further timers (the quality retry loop), so drain
-        // until quiet rather than one round.
+        swiper: {
+            get calls() { return slideNextCalls; },
+            get activeIndex() { return activeIndex; },
+        },
+        fullscreen: {
+            get element() { return fullscreenElement; },
+            get requests() { return fullscreenRequests.slice(); },
+        },
+        // Deliver a document-level gesture or event.
+        fire(name) { fireOn(docHandlers, name); },
+        fireWindow(name) { fireOn(winHandlers, name); },
+        // Timers can schedule further timers (the quality retry loop, the
+        // settle-after-advance timeout), so drain until quiet, not one round.
         flush(limit = 100) {
             for (let i = 0; i < limit && timers.length; i++) {
                 timers.splice(0, timers.length).forEach(t => t.fn());
@@ -134,9 +222,15 @@ function makeVideo(overrides) {
         loop: false,
         muted: false,
         isConnected: true,
+        src: '',
+        playCalls: 0,
         addEventListener(name, fn) { (listeners[name] = listeners[name] || []).push(fn); },
         emit(name) { (listeners[name] || []).forEach(fn => fn()); },
-        play() { this.paused = false; return Promise.resolve(); },
+        play() {
+            this.playCalls++;
+            this.paused = false;
+            return Promise.resolve();
+        },
     }, overrides || {});
 }
 
@@ -408,6 +502,141 @@ test('does not touch quality on a page that is not a watch page', () => {
     page.flush();
 
     assert(page.quality.selected === null, 'should not have opened the panel');
+});
+
+// --- advancing in place ----------------------------------------------------
+
+test('advances through the episode swiper without reloading the page', () => {
+    const video = makeVideo();
+    const page = createPage({ videos: [video], swiper: { slides: 10, activeIndex: 2 } });
+
+    video.emit('ended');
+
+    assert(page.swiper.calls === 1, 'expected one slideNext, got ' + page.swiper.calls);
+    assert(page.swiper.activeIndex === 3, 'expected slide 3, got ' + page.swiper.activeIndex);
+    assert(
+        page.location.href === WATCH,
+        'a same-page advance must not touch location.href, got ' + page.location.href
+    );
+});
+
+test('does not advance past the last slide', () => {
+    const video = makeVideo();
+    const href = REEL + '?ep=36&lang=en';
+    const page = createPage({
+        videos: [video],
+        href,
+        swiper: { slides: 36, activeIndex: 35 },
+    });
+
+    video.emit('ended');
+
+    assert(page.swiper.calls === 0, 'should not have stepped past the end');
+    assert(page.location.href === href, 'should not have navigated, got ' + page.location.href);
+    assert(/Last episode/.test(page.toggle().textContent), 'expected a last-episode message, got ' + page.toggle().textContent);
+});
+
+test('re-applies max quality after the new episode loads', () => {
+    const video = makeVideo();
+    const page = createPage({
+        videos: [video],
+        href: REEL + '?ep=5&lang=en',
+        quality: ['1080p', '720p', '480p'],
+        activeQuality: '720p',
+        swiper: { slides: 36, activeIndex: 4, dropQualityOnAdvance: true },
+    });
+
+    page.flush();
+    assert(page.quality.selected === '1080p', 'expected 1080p before advancing');
+
+    video.emit('ended');
+    page.flush();
+
+    assert(page.quality.selections.length === 2, 'expected quality to be re-selected, got ' + page.quality.selections.length);
+    assert(page.quality.selected === '1080p', 'the new episode should be back at 1080p, got ' + page.quality.selected);
+    assert(page.location.href === REEL + '?ep=5&lang=en', 'should still be a same-page advance');
+});
+
+// --- auto fullscreen -------------------------------------------------------
+
+test('arms fullscreen and enters on the next gesture', () => {
+    const page = createPage({ videos: [makeVideo()] });
+
+    assert(/ON/.test(page.fsToggle().textContent), 'auto-fullscreen should start on');
+    assert(page.fullscreen.requests.length === 0, 'nothing should happen without a gesture');
+
+    page.fire('pointerdown');
+
+    assert(page.fullscreen.requests.length === 1, 'expected one request, got ' + page.fullscreen.requests.length);
+    assert(page.fullscreen.element && page.fullscreen.element.name === 'player', 'expected the player section to go fullscreen');
+});
+
+test('does not request fullscreen once the player is already fullscreen', () => {
+    const page = createPage({ videos: [makeVideo()] });
+
+    page.fire('pointerdown');
+    page.fire('pointerdown');
+
+    assert(page.fullscreen.requests.length === 1, 'expected the second gesture to be a no-op, got ' + page.fullscreen.requests.length);
+});
+
+test('leaves fullscreen alone when the toggle is off', () => {
+    const page = createPage({ videos: [makeVideo()], fullscreen: false });
+
+    page.fire('pointerdown');
+
+    assert(page.fullscreen.requests.length === 0, 'switched off, nothing to do');
+    assert(/OFF/.test(page.fsToggle().textContent), 'the button should read OFF, got ' + page.fsToggle().textContent);
+});
+
+test('does not arm fullscreen on a page that is not a watch page', () => {
+    const page = createPage({ videos: [makeVideo()], href: 'https://reelfren.net/browse' });
+
+    page.fire('pointerdown');
+
+    assert(page.fullscreen.requests.length === 0, 'browse pages have no player to go fullscreen');
+});
+
+test('remembers the fullscreen toggle across reloads', () => {
+    const page = createPage({ videos: [makeVideo()] });
+
+    page.fsToggle().click();
+    assert(page.store.get('goodshort-auto-fullscreen-enabled') === 'off', 'expected "off" to be stored');
+
+    page.fsToggle().click();
+    assert(page.store.get('goodshort-auto-fullscreen-enabled') === 'on', 'expected "on" to be stored');
+});
+
+// --- playback --------------------------------------------------------------
+
+test('does not undo a pause when the page mutates again', () => {
+    const video = makeVideo({ readyState: 2, src: 'https://cdn.example/720.m3u8' });
+    const page = createPage({ videos: [video] });
+
+    page.flush();
+    assert(video.playCalls === 1, 'expected the first attach to autoplay once, got ' + video.playCalls);
+
+    video.paused = true; // the user hits pause
+    page.fireWindow('pageshow'); // and the page churns, as it constantly does
+    page.flush();
+
+    assert(video.playCalls === 1, 'a pause must survive another attach pass, but play ran ' + video.playCalls + ' times');
+    assert(video.paused === true, 'the video should have stayed paused');
+});
+
+test('autoplays again once the episode actually changes', () => {
+    const video = makeVideo({ readyState: 2, src: 'https://cdn.example/720.m3u8' });
+    const page = createPage({ videos: [video] });
+
+    page.flush();
+    assert(video.playCalls === 1, 'expected one autoplay');
+
+    video.paused = true;
+    video.src = 'https://cdn.example/1080.m3u8'; // next episode: different media
+    page.fireWindow('pageshow');
+    page.flush();
+
+    assert(video.playCalls === 2, 'new media should get its own autoplay, got ' + video.playCalls);
 });
 
 // --- report ----------------------------------------------------------------
