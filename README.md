@@ -22,7 +22,6 @@ domain or any subdomain.
 - [Usage](#usage)
 - [Configuration](#configuration)
 - [How it works](#how-it-works)
-- [Fullscreen](#fullscreen)
 - [Troubleshooting](#troubleshooting)
 - [Known limitations](#known-limitations)
 - [Privacy](#privacy)
@@ -36,20 +35,16 @@ domain or any subdomain.
   moves to the next episode.
 - 🎬 **Moves in place where it can.** These sites already render every episode as a
   slide in one carousel, so the script steps that carousel instead of reloading the
-  page. Faster, and — the reason it matters — a reload always kicks you out of
-  fullscreen.
+  page. Faster, and the player keeps whatever state you set up yourself — including
+  the site's own fullscreen button.
 - 🔗 **Uses the site's own link when it exists.** If the page rendered a
   next-episode anchor, that's followed. Otherwise the URL's `ep` number is
   incremented as a fallback, so it still works on players that render no link.
 - 🔁 **Backup for players that never fire `ended`.** A `timeupdate` check catches
   the last third of a second. It's skipped while you're seeking, so dragging the
   scrubber to the end doesn't skip an episode.
-- 🔲 **Auto-fullscreen.** A second toggle puts the player fullscreen and keeps it
-  there across episode changes. Browsers won't allow this without a gesture, so it
-  arms itself and waits for your next click or key press — see
-  [Fullscreen](#fullscreen) for the details.
-- ⏸️ **Two toggles on the page.** One for auto-next, one for auto-fullscreen. Both
-  remember their state across reloads.
+- ⏸️ **A toggle on the page.** Switch auto-advance on or off at any time; the
+  state is remembered across reloads.
 - 🖐️ **Your pause sticks.** Auto-play is attempted once per piece of media, not on
   every DOM change, so pausing isn't undone a moment later.
 - 🔊 **Sound after autoplay is blocked.** If the browser refuses to autoplay with
@@ -97,15 +92,14 @@ A `*.` host in a match pattern covers the bare domain *and* every subdomain, and
 
 ## Usage
 
-Once installed it runs on its own. Two buttons sit in the bottom-right corner:
+Once installed it runs on its own. One button sits in the bottom-right corner:
 
 ```
-Auto-next: ON        Auto-fullscreen: ON
+Auto-next: ON
 ```
 
-Green means on, grey means off. Each state is stored in `localStorage` under
-`goodshort-auto-next-enabled` and `goodshort-auto-fullscreen-enabled`, so both
-survive reloads and navigation.
+Green means on, grey means off. The state is stored in `localStorage` under
+`goodshort-auto-next-enabled`, so it survives reloads and navigation.
 
 To watch it work, set `DEBUG = true` at the top of the script and open DevTools →
 Console. Every action logs with an `[auto-next]` prefix, including the exact URL
@@ -166,7 +160,7 @@ other.
 2. Reads `?ep=` and validates it's a whole number. No `ep`, no advance.
 3. Tries to **advance in place** first: these sites render one slide per episode in
    a Swiper carousel, so stepping it (`element.swiper.slideNext()`) swaps the
-   episode without a page load — and without losing fullscreen. If the carousel is
+   episode without a page load. If the carousel is
    already on its last slide, it stops there rather than guessing a URL.
 4. Falls back to the site's own next-episode anchor when there's no carousel:
    the first one pointing at the same series with `ep` one higher.
@@ -227,41 +221,6 @@ the element.
 `localStorage` access is wrapped in `try/catch` — in some privacy modes it throws
 on access, and that shouldn't take the script down with it.
 
-### Fullscreen
-
-This one is constrained by the browser, not by the site. `requestFullscreen()`
-requires **recent user activation**: a script call with no gesture behind it is
-simply refused, and any page navigation drops you out of fullscreen.
-
-So auto-fullscreen can't be silent, and the script doesn't pretend otherwise:
-
-1. It arms a one-shot listener for the next `pointerdown`, `keydown` or
-   `touchstart`, then removes it.
-2. On that gesture it calls `requestFullscreen()` on the player
-   (`section.phone-player`), which the browser accepts because a real gesture just
-   happened.
-3. After an in-place advance it arms again, in case the player dropped out anyway.
-
-The practical effect: with the toggle on, the next click or key press anywhere puts
-you fullscreen, and in-place advancing keeps you there across episodes. Turning the
-toggle on mid-episode arms it straight away, so it takes effect on your next click
-rather than at the next reload.
-
-The target is resolved from the video, not from the page: there is one
-`<section class="phone-player">` per episode — 36 of them on a 36-episode series —
-and only the active one holds a `<video>`. Fullscreening
-`querySelector('section.phone-player')` therefore goes fullscreen on episode 1's
-empty placeholder, i.e. a black screen. `video.closest('section.phone-player')` picks
-the one that is actually playing.
-
-If the gesture lands on the site's own `Full Screen` button, the script stands down
-and lets the site handle it: both read the same state, so handling it in both places
-would enter fullscreen and immediately exit again.
-
-If a mirror has no carousel — `advanceInPlace()` returns false — the script falls
-back to a real navigation, and that will exit fullscreen no matter what, because
-the page is genuinely reloading.
-
 ## Troubleshooting
 
 | Symptom | Fix |
@@ -269,8 +228,6 @@ the page is genuinely reloading.
 | Nothing happens at the end of an episode | Confirm the script is enabled and the URL is a `?page=watch` page, then hard-reload (`Ctrl`/`Cmd` + `Shift` + `R`). |
 | Toggle says OFF | Click it. The state persists, so a stray click sticks. |
 | Sound is off on the next episode | Click once on the page — the browser blocks audio autoplay until you interact. |
-| It goes fullscreen as soon as I click anything | That's auto-fullscreen doing its job: browsers only grant fullscreen on a gesture. Click the `Auto-fullscreen` button to turn it off. |
-| Fullscreen still drops on some mirrors | Only the carousel advance keeps it. If that mirror reloads for the next episode, the browser ends fullscreen and a script can't take you back without another gesture. |
 | I pause and it starts again | Fixed in v1.5.0. If it recurs, the player is changing `currentSrc` on pause — open an issue with `DEBUG = true` output. |
 | A mid-episode seek skips ahead | Shouldn't happen; the `timeupdate` backup ignores seeks. If it does, open an issue with your `DEBUG = true` output. |
 | It advances but the next episode is blank | The fallback URL assumed sequential numbering and the site doesn't use it. Report the series ID. |
@@ -278,17 +235,12 @@ the page is genuinely reloading.
 
 ## Known limitations
 
-- **Auto-advance is tested by reasoning, not on a live session.** The logic is
-  covered by a headless suite, and both quality selection and in-place advancing
-  were confirmed against reelfren's live player, but nobody has yet watched an
-  episode end and advance automatically in a real browser. Confirm it once with
+- **Auto-advance hasn't been watched end-to-end in a live session.** The logic is
+  covered by a headless suite, and quality selection, in-place advancing and the
+  `ended` handling were all confirmed against reelfren's live player (an episode
+  advanced in place and playback resumed at 1080p) — but a naturally finishing
+  episode hasn't been watched in a real browser. Confirm it once with
   `DEBUG = true`.
-- **Auto-fullscreen needs a gesture, and a reload ends it.** No userscript can
-  enter fullscreen silently — that's a browser rule, not a bug here. It also can't
-  survive a page navigation, so it only holds across episode changes when the site
-  advances in place. Fullscreen entry itself could not be exercised in an embedded
-  browser (requests never settle there) and needs a real Chrome session; that the
-  script picks the player holding the video, rather than an empty one, is verified.
 - **The quality bump relies on the player's own menu.** It looks for
   `button[aria-label="Quality"]` and `button.quality-option`. Verified on
   reelfren's player; if another mirror's player labels those differently, quality
@@ -296,7 +248,7 @@ the page is genuinely reloading.
   `opening quality panel` when it engages.
 - **In-place advancing relies on a Swiper carousel.** It looks for `.watch-swiper`
   with a `swiper` instance. Where that's absent the script falls back to a normal
-  navigation, which works but costs you fullscreen and a page load.
+  navigation, which works but costs a page load and resets the player.
 - **Assumes zero-based, sequential episodes.** If a series skips numbers or
   restarts numbering, the fallback URL will be wrong — though the site's own next
   link, when present, is always preferred and handles that correctly.
@@ -307,10 +259,9 @@ the page is genuinely reloading.
 ## Privacy
 
 The script runs entirely in your browser. It reads the page URL, finds anchors
-already on the page, drives the player's own quality menu, steps the site's own
-carousel, and asks the browser for fullscreen after one of your gestures. It makes
-**no network requests** of its own, sends nothing anywhere, and stores only two
-on/off flags in `localStorage`.
+already on the page, drives the player's own quality menu and steps the site's own
+carousel. It makes **no network requests** of its own, sends nothing anywhere, and
+stores only one on/off flag in `localStorage`.
 
 ## Testing
 
@@ -321,7 +272,7 @@ manager, no npm dependencies:
 node test/auto-next.test.js
 ```
 
-34 assertions covering:
+29 assertions covering:
 
 - following the site's own next-episode link
 - the `ep` increment fallback when no link is rendered
@@ -342,22 +293,29 @@ node test/auto-next.test.js
 - advancing in place: stepping the carousel without touching `location.href`,
   stopping at the last slide instead of guessing a URL, and re-applying max
   quality once the new episode has loaded
-- auto-fullscreen: arming without a gesture, entering on the next one, not asking
-  twice when already fullscreen, doing nothing while switched off, staying out of it
-  off a watch page, and the toggle persisting
 - playback: a pause surviving another attach pass, new media still getting its own
   autoplay, a new episode being started despite mounting paused at `readyState 0`,
   and a video that has not loaded yet still getting a play attempt
-- fullscreen target selection: the stub models the real page's 36 player sections
-  with only the active one holding a video, so resolving "the first section on the
-  page" fails the suite
 
 The suite is checked by mutation as well as by passing: removing the autoplay
-guard, the in-place advance, the fullscreen arming, the quality reset, the playback
-nudge or the `readyState` fix each makes its tests fail, so the assertions aren't
-just decoration.
+guard, the in-place advance, the quality reset, the playback nudge or the
+`readyState` fix each makes its tests fail, so the assertions aren't just
+decoration.
 
 ## Changelog
+
+### v1.6.0
+
+- **Removed: auto-fullscreen.** It caused issues in practice, so the whole
+  feature is gone — the toggle, its `localStorage` flag
+  (`goodshort-auto-fullscreen-enabled`), the gesture arming listener and the
+  player targeting logic. If you had the toggle switched on, the script now
+  leaves fullscreen entirely to the site's own Full Screen button. An in-place
+  episode change still keeps that fullscreen, because no page load happens.
+  The old `goodshort-auto-fullscreen-enabled` key is simply ignored; nothing
+  else changes.
+- Everything else is unchanged: auto-next, max quality, in-place advancing, the
+  pause fix and the playback nudge all work as in v1.5.1.
 
 ### v1.5.1
 

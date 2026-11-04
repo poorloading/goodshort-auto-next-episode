@@ -19,15 +19,13 @@ function createPage(options = {}) {
     const links = options.links || [];
     const store = new Map();
     if (options.enabled === false) store.set('goodshort-auto-next-enabled', 'off');
-    if (options.fullscreen === false) store.set('goodshort-auto-fullscreen-enabled', 'off');
 
     const timers = [];
     let nextTimer = 1;
     const appended = [];
     const location = { href: options.href || WATCH };
 
-    // Listener registries, so a test can deliver the gesture a browser insists
-    // on before it will grant fullscreen, and the events the script waits for.
+    // Listener registries for the events the script waits for.
     const docHandlers = new Map();
     const winHandlers = new Map();
 
@@ -46,31 +44,6 @@ function createPage(options = {}) {
         // Copy first: a one-shot handler removes itself while running.
         [...(map.get(name) || [])].forEach(fn => fn({ type: name }));
     }
-
-    // Fullscreen: record which element was asked to go fullscreen, and keep
-    // document.fullscreenElement honest so the script's guards behave.
-    let fullscreenElement = null;
-    const fullscreenRequests = [];
-
-    function fullscreenTarget(name) {
-        return {
-            name,
-            requestFullscreen() {
-                fullscreenRequests.push(name);
-                fullscreenElement = this;
-                return Promise.resolve();
-            },
-        };
-    }
-
-    const documentElement = fullscreenTarget('documentElement');
-
-    // A real watch page carries one <section class="phone-player"> per episode,
-    // and only the active one holds a <video>. Modelling both is the whole point:
-    // fullscreening "the first player on the page" gives an empty one, i.e. a
-    // black screen, and that bug must fail the suite.
-    const playerSection = options.noPlayer ? null : fullscreenTarget('player');
-    const firstSection = options.noPlayer ? null : fullscreenTarget('first-in-dom');
 
     // The player's quality menu: a trigger that toggles a panel of options.
     // Modelled so the "pick the highest rendition" logic is actually exercised.
@@ -133,8 +106,6 @@ function createPage(options = {}) {
 
     const document = {
         body: { appendChild(el) { appended.push(el); } },
-        documentElement,
-        get fullscreenElement() { return fullscreenElement; },
         getElementById(id) {
             return appended.find(el => el.id === id) || null;
         },
@@ -160,23 +131,12 @@ function createPage(options = {}) {
         querySelector(selector) {
             if (selector === 'button[aria-label="Quality"]') return qualityTrigger;
             if (selector === 'video') return videos[0] || null;
-            // The plain selector resolves to the first match in DOM order, which
-            // on a real page is episode 1's empty placeholder.
-            if (selector === 'section.phone-player') return firstSection;
-            if (selector === '.swiper-slide-active section.phone-player') return playerSection;
             if (selector === '.watch-swiper') return swiperElement;
             return null;
         },
         addEventListener(name, fn) { addTo(docHandlers, name, fn); },
         removeEventListener(name, fn) { removeFrom(docHandlers, name, fn); },
     };
-
-    // A video knows which player owns it, same as Element.closest.
-    videos.forEach(video => {
-        if (typeof video.closest !== 'function') {
-            video.closest = sel => (sel === 'section.phone-player' ? playerSection : null);
-        }
-    });
 
     const windowStub = {
         addEventListener(name, fn) { addTo(winHandlers, name, fn); },
@@ -209,7 +169,6 @@ function createPage(options = {}) {
         store,
         videos,
         toggle: () => document.getElementById('gs-auto-next-toggle'),
-        fsToggle: () => document.getElementById('gs-auto-fs-toggle'),
         quality: {
             get selected() { return selections.length ? selections[selections.length - 1] : null; },
             get selections() { return selections.slice(); },
@@ -221,12 +180,7 @@ function createPage(options = {}) {
             get calls() { return slideNextCalls; },
             get activeIndex() { return activeIndex; },
         },
-        fullscreen: {
-            get element() { return fullscreenElement; },
-            get requests() { return fullscreenRequests.slice(); },
-        },
         // Deliver a document-level gesture or event.
-        fire(name) { fireOn(docHandlers, name); },
         fireWindow(name) { fireOn(winHandlers, name); },
         // Timers can schedule further timers (the quality retry loop, the
         // settle-after-advance timeout), so drain until quiet, not one round.
@@ -582,56 +536,6 @@ test('re-applies max quality after the new episode loads', () => {
     assert(page.quality.selections.length === 2, 'expected quality to be re-selected, got ' + page.quality.selections.length);
     assert(page.quality.selected === '1080p', 'the new episode should be back at 1080p, got ' + page.quality.selected);
     assert(page.location.href === REEL + '?ep=5&lang=en', 'should still be a same-page advance');
-});
-
-// --- auto fullscreen -------------------------------------------------------
-
-test('arms fullscreen and enters on the next gesture', () => {
-    const page = createPage({ videos: [makeVideo()] });
-
-    assert(/ON/.test(page.fsToggle().textContent), 'auto-fullscreen should start on');
-    assert(page.fullscreen.requests.length === 0, 'nothing should happen without a gesture');
-
-    page.fire('pointerdown');
-
-    assert(page.fullscreen.requests.length === 1, 'expected one request, got ' + page.fullscreen.requests.length);
-    assert(page.fullscreen.element && page.fullscreen.element.name === 'player', 'expected the player section to go fullscreen');
-});
-
-test('does not request fullscreen once the player is already fullscreen', () => {
-    const page = createPage({ videos: [makeVideo()] });
-
-    page.fire('pointerdown');
-    page.fire('pointerdown');
-
-    assert(page.fullscreen.requests.length === 1, 'expected the second gesture to be a no-op, got ' + page.fullscreen.requests.length);
-});
-
-test('leaves fullscreen alone when the toggle is off', () => {
-    const page = createPage({ videos: [makeVideo()], fullscreen: false });
-
-    page.fire('pointerdown');
-
-    assert(page.fullscreen.requests.length === 0, 'switched off, nothing to do');
-    assert(/OFF/.test(page.fsToggle().textContent), 'the button should read OFF, got ' + page.fsToggle().textContent);
-});
-
-test('does not arm fullscreen on a page that is not a watch page', () => {
-    const page = createPage({ videos: [makeVideo()], href: 'https://reelfren.net/browse' });
-
-    page.fire('pointerdown');
-
-    assert(page.fullscreen.requests.length === 0, 'browse pages have no player to go fullscreen');
-});
-
-test('remembers the fullscreen toggle across reloads', () => {
-    const page = createPage({ videos: [makeVideo()] });
-
-    page.fsToggle().click();
-    assert(page.store.get('goodshort-auto-fullscreen-enabled') === 'off', 'expected "off" to be stored');
-
-    page.fsToggle().click();
-    assert(page.store.get('goodshort-auto-fullscreen-enabled') === 'on', 'expected "on" to be stored');
 });
 
 // --- playback --------------------------------------------------------------

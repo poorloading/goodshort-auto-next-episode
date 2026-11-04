@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         GoodShort Auto Next Episode
 // @namespace    https://github.com/poorloading/goodshort-auto-next-episode
-// @version      1.5.1
+// @version      1.6.0
 // @description  Automatically plays the next episode when the current video ends.
 // @author       poorloading
 // @license      MIT
@@ -29,14 +29,11 @@
   const QUALITY_RETRY_MS = 400; // how often to look for the quality control
   const QUALITY_MAX_TRIES = 15; // ~6s of looking, then give up quietly
   const KEY = 'goodshort-auto-next-enabled';
-  const FS_KEY = 'goodshort-auto-fullscreen-enabled';
 
   // The player's own quality menu. Two elements, driven like a user would.
   const QUALITY_TRIGGER = 'button[aria-label="Quality"]';
   const QUALITY_OPTION = 'button.quality-option';
-  const PLAYER_SECTION = 'section.phone-player';
   const SWIPER = '.watch-swiper';
-  const FS_BUTTON = 'button[aria-label="Full Screen"]';
 
   const log = (...args) => { if (DEBUG) console.log('[auto-next]', ...args); };
 
@@ -57,100 +54,50 @@
     }
   }
 
-  function readFullscreen() {
-    try {
-      return localStorage.getItem(FS_KEY) !== 'off';
-    } catch (_) {
-      return true;
-    }
-  }
-
-  function writeFullscreen(value) {
-    try {
-      localStorage.setItem(FS_KEY, value ? 'on' : 'off');
-    } catch (_) {
-      /* as above */
-    }
-  }
-
   let enabled = readEnabled();
-  let fullscreenWanted = readFullscreen();
   const attachedVideos = new WeakSet();
-  let nextButton;
-  let fsButton;
+  let status;
   let navigating = false;
   let attachTimer = null;
   let messageTimer = null;
   let qualityTries = 0;
   let qualitySettled = false;
   let qualityPanelOpened = false;
-  let fsArmed = false;
-  let fsEnter = null;
 
-  // --- toggles -------------------------------------------------------------
+  // --- toggle --------------------------------------------------------------
 
-  const BUTTON_CSS = 'position:fixed;z-index:2147483647;right:14px;padding:9px 12px;border:0;border-radius:8px;background:#191919;color:#fff;font:13px/1.2 sans-serif;box-shadow:0 2px 12px #0006;cursor:pointer';
-
-  function makeButton(id, title, bottom) {
-    const button = document.createElement('button');
-    button.id = id;
-    button.type = 'button';
-    button.title = title;
-    button.style.cssText = BUTTON_CSS + ';bottom:' + bottom + 'px';
-    document.body.appendChild(button);
-    return button;
-  }
-
-  function makeToggles() {
+  function makeToggle() {
     if (document.getElementById('gs-auto-next-toggle')) return;
     if (!document.body) return; // document-idle, but be defensive
 
-    nextButton = makeButton('gs-auto-next-toggle', 'Toggle automatic next episode', 14);
-    nextButton.addEventListener('click', () => {
+    const button = document.createElement('button');
+    button.id = 'gs-auto-next-toggle';
+    button.type = 'button';
+    button.title = 'Toggle automatic next episode';
+    button.style.cssText = 'position:fixed;z-index:2147483647;right:14px;bottom:14px;padding:9px 12px;border:0;border-radius:8px;background:#191919;color:#fff;font:13px/1.2 sans-serif;box-shadow:0 2px 12px #0006;cursor:pointer';
+    button.addEventListener('click', () => {
       enabled = !enabled;
       writeEnabled(enabled);
-      updateToggles();
+      updateButton();
       log('auto-next ' + (enabled ? 'enabled' : 'disabled'));
     });
 
-    fsButton = makeButton('gs-auto-fs-toggle', 'Toggle automatic fullscreen', 58);
-    fsButton.addEventListener('click', () => {
-      fullscreenWanted = !fullscreenWanted;
-      writeFullscreen(fullscreenWanted);
-      updateToggles();
-      log('auto-fullscreen ' + (fullscreenWanted ? 'enabled' : 'disabled'));
-      // Turning it on while already watching should take effect straight away,
-      // which only a gesture can do.
-      if (fullscreenWanted) armFullscreen();
-    });
-
-    updateToggles();
+    document.body.appendChild(button);
+    status = button;
+    updateButton();
   }
 
-  function paint(button, on, label) {
-    if (!button) return;
-    button.textContent = label + ': ' + (on ? 'ON' : 'OFF');
-    button.style.background = on ? '#176b45' : '#555';
-  }
-
-  function updateToggles(message) {
-    clearTimeout(messageTimer);
-
-    if (nextButton) {
-      if (message) {
-        nextButton.textContent = message;
-        nextButton.style.background = '#8a6d1f';
-        messageTimer = setTimeout(() => updateToggles(), MESSAGE_MS);
-      } else {
-        paint(nextButton, enabled, 'Auto-next');
-      }
-    }
-    paint(fsButton, fullscreenWanted, 'Auto-fullscreen');
-  }
-
-  // Status messages belong on the auto-next button; nothing else uses them.
   function updateButton(message) {
-    updateToggles(message);
+    if (!status) return;
+
+    clearTimeout(messageTimer);
+    status.textContent = message || 'Auto-next: ' + (enabled ? 'ON' : 'OFF');
+    status.style.background = message ? '#8a6d1f' : (enabled ? '#176b45' : '#555');
+
+    // A transient status shouldn't sit there forever.
+    if (message) {
+      messageTimer = setTimeout(() => updateButton(), MESSAGE_MS);
+    }
   }
 
   // --- quality -------------------------------------------------------------
@@ -219,78 +166,11 @@
     qualityPanelOpened = false; // the player closes the panel on selection
   }
 
-  // --- fullscreen ----------------------------------------------------------
-
-  // There is one <section class="phone-player"> per episode — 36 of them on a
-  // 36-episode series — and only the active one holds a <video>. Fullscreening
-  // the first match therefore shows an empty player: a black screen. Start from
-  // the video and walk up to the player that actually owns it.
-  function fullscreenTarget() {
-    const video = document.querySelector('video');
-    const owner = video && video.closest ? video.closest(PLAYER_SECTION) : null;
-    if (owner) return owner;
-
-    const active = document.querySelector('.swiper-slide-active ' + PLAYER_SECTION);
-    if (active) return active;
-
-    return document.querySelector(PLAYER_SECTION) || document.documentElement;
-  }
-
-  // Browsers only grant fullscreen on a fresh user gesture, so this can never
-  // be silent: it arms a one-shot listener and enters fullscreen on the next
-  // click, key press or tap.
-  function armFullscreen() {
-    if (!fullscreenWanted || document.fullscreenElement || fsArmed) return;
-    // The toggle is visible on every page of a mirror; only watch pages have a
-    // player worth going fullscreen for.
-    if (!isWatchPage(new URL(location.href))) return;
-    fsArmed = true;
-
-    const enter = (event) => {
-      // If the gesture was on the site's own fullscreen button, let the site do
-      // it. Handling it here too would enter and immediately exit, since its
-      // click handler toggles based on the same state.
-      const target = event && event.target;
-      if (target && target.closest && target.closest(FS_BUTTON)) {
-        disarmFullscreen();
-        return;
-      }
-
-      disarmFullscreen();
-
-      if (!fullscreenWanted || document.fullscreenElement) return;
-      const player = fullscreenTarget();
-      if (!player.requestFullscreen) return;
-
-      const attempt = player.requestFullscreen();
-      if (attempt && attempt.catch) {
-        attempt.catch((error) => log('fullscreen refused:', error.name));
-      }
-      log('entering fullscreen');
-    };
-
-    fsEnter = enter;
-    document.addEventListener('pointerdown', enter, true);
-    document.addEventListener('keydown', enter, true);
-    document.addEventListener('touchstart', enter, true);
-    log('auto-fullscreen armed');
-  }
-
-  function disarmFullscreen() {
-    fsArmed = false;
-    if (!fsEnter) return;
-    document.removeEventListener('pointerdown', fsEnter, true);
-    document.removeEventListener('keydown', fsEnter, true);
-    document.removeEventListener('touchstart', fsEnter, true);
-    fsEnter = null;
-  }
-
   // --- advancing in place --------------------------------------------------
 
   // Every episode is a slide in one swiper, so stepping it moves to the next
-  // episode without a page load. That matters beyond speed: a navigation always
-  // drops you out of fullscreen, and no script can put you back without another
-  // gesture.
+  // episode without a page load: faster, and it keeps whatever player state you
+  // set up yourself, including fullscreen from the site's own button.
   function advanceInPlace() {
     const element = document.querySelector(SWIPER);
     const swiper = element && element.swiper;
@@ -319,7 +199,6 @@
     setTimeout(() => {
       navigating = false;
       applyMaxQuality();
-      armFullscreen();
     }, 1200);
 
     return true;
@@ -382,8 +261,9 @@
     const episode = episodeOf(url);
     if (episode === null) return;
 
-    // In place first: same page, so fullscreen survives. Only fall back to a
-    // navigation when the page has no swiper to drive.
+    // In place first: same page, so whatever the site's own player is doing
+    // (including fullscreen you set yourself) is left alone. Only fall back to
+    // a navigation when the page has no swiper to drive.
     if (advanceInPlace()) return;
 
     // Prefer the page's own link, which knows about numbering quirks and any
@@ -483,7 +363,7 @@
   }
 
   function attachVideo() {
-    makeToggles();
+    makeToggle();
 
     const page = new URL(location.href);
     if (!isWatchPage(page)) {
@@ -497,9 +377,6 @@
     // Independent of the auto-next toggle: turning off auto-advance shouldn't
     // drop you back to a lower rendition.
     applyMaxQuality();
-
-    // Fullscreen can't be granted without a gesture, so arm it and wait.
-    armFullscreen();
 
     if (!enabled) return;
 
@@ -534,7 +411,7 @@
 
   // --- init ----------------------------------------------------------------
 
-  makeToggles();
+  makeToggle();
   attachVideo();
 
   // Debounced: this page mutates constantly, and a full pass per mutation is
@@ -554,5 +431,5 @@
     scheduleAttach();
   });
 
-  log('v1.5.1 ready on ' + location.hostname);
+  log('v1.6.0 ready on ' + location.hostname);
 })();
