@@ -179,39 +179,75 @@ test('does nothing on a page that is not the watch page', () => {
     assert(!page.location.href.includes('ep='), 'should not have navigated, got ' + page.location.href);
 });
 
-// --- mirrors --------------------------------------------------------------
+// --- reelfren.net (path-based watch URLs) ---------------------------------
 
-test('works on a reelfren.net watch page', () => {
+const REEL =
+    'https://reelfren.net/watch/storyreel/877541-my-catfish-girlfriend-didn-t-know-the-real-me';
+
+test('advances a reelfren.net episode by bumping ?ep= and keeps ?lang=', () => {
     const video = makeVideo();
-    const page = createPage({ videos: [video], href: 'https://reelfren.net/?page=watch&id=xy&ep=2' });
+    const page = createPage({ videos: [video], href: REEL + '?ep=5&lang=en' });
 
     video.emit('ended');
 
     assert(
-        page.location.href === 'https://reelfren.net/?page=watch&id=xy&ep=3',
-        'expected ep=3 on reelfren.net, got ' + page.location.href
+        page.location.href === REEL + '?ep=6&lang=en',
+        'expected ep=6 with lang kept, got ' + page.location.href
+    );
+});
+
+test("prefers reelfren's own next-episode link when one exists", () => {
+    const video = makeVideo();
+    const next = REEL + '?ep=6&lang=en';
+    const page = createPage({ videos: [video], href: REEL + '?ep=5&lang=en', links: [{ href: next }] });
+
+    video.emit('ended');
+
+    assert(page.location.href === next, 'expected the next link, got ' + page.location.href);
+});
+
+test('ignores a reelfren next link for a different series', () => {
+    const video = makeVideo();
+    const other = 'https://reelfren.net/watch/storyreel/999999-some-other-drama?ep=6&lang=en';
+    const page = createPage({ videos: [video], href: REEL + '?ep=5&lang=en', links: [{ href: other }] });
+
+    video.emit('ended');
+
+    assert(
+        page.location.href === REEL + '?ep=6&lang=en',
+        'should have ignored the other series, got ' + page.location.href
     );
 });
 
 test('keeps the host it started on when falling back to ep+1', () => {
     const video = makeVideo();
-    const page = createPage({ videos: [video], href: 'https://www.reelfren.net/?page=watch&id=xy&ep=7' });
+    const href = 'https://www.reelfren.net/watch/storyreel/877541-my-catfish-girlfriend-didn-t-know-the-real-me?ep=7';
+    const page = createPage({ videos: [video], href });
 
     video.emit('ended');
 
     assert(
-        page.location.href === 'https://www.reelfren.net/?page=watch&id=xy&ep=8',
+        page.location.href === href.replace('ep=7', 'ep=8'),
         'expected the subdomain preserved, got ' + page.location.href
     );
 });
 
 test('does nothing on a reelfren.net page that is not a watch page', () => {
     const video = makeVideo();
-    const page = createPage({ videos: [video], href: 'https://reelfren.net/series' });
+    const page = createPage({ videos: [video], href: 'https://reelfren.net/browse' });
 
     video.emit('ended');
 
-    assert(page.location.href === 'https://reelfren.net/series', 'should not have navigated');
+    assert(page.location.href === 'https://reelfren.net/browse', 'should not have navigated');
+});
+
+test('ignores a watch page with no episode number', () => {
+    const video = makeVideo();
+    const page = createPage({ videos: [video], href: REEL });
+
+    video.emit('ended');
+
+    assert(page.location.href === REEL, 'should not navigate without an ep, got ' + page.location.href);
 });
 
 // --- the end-of-video backup ----------------------------------------------

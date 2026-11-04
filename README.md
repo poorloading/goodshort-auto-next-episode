@@ -107,8 +107,9 @@ All tunables are constants at the top of the file:
 | `END_THRESHOLD_S` | `0.35` | How close to the end counts as "finished" for the `timeupdate` backup. |
 | `MESSAGE_MS` | `4000` | How long a status message sits before reverting to the toggle label. |
 
-Episodes are numbered from zero in the URL (`&ep=0` is the first episode), which
-is why the fallback increments rather than reads an episode count.
+The episode number comes from `?ep=` on the URL and the fallback increments it, so
+the script never needs to know whether a site counts from zero or one. Only the
+difference matters.
 
 If autoplay is too aggressive, `END_THRESHOLD_S` is the one to raise — a larger
 value advances slightly before the video truly ends.
@@ -125,14 +126,30 @@ Three triggers, all funnelling into one debounced pass:
    `APPLY_DELAY_MS`, so a page that mutates constantly doesn't trigger a full
    attach pass per mutation.
 
+### Watch-page detection
+
+The mirrors don't agree on URL shape, so both are recognised:
+
+| Mirror | Shape |
+| --- | --- |
+| `dramafren.org`, `shorttw.live` | `/?page=watch&id=<id>&ep=<n>` |
+| `reelfren.net` | `/watch/<type>/<id>-<slug>?ep=<n>&lang=<cc>` |
+
+Either a `?page=watch` param, or a path beginning `/watch/`, counts as a watch
+page. Two URLs are treated as the same series if their **path** matches and, when
+an `id` param is present, that matches too — so `reelfren.net` is identified by
+its path and `dramafren.org` by its query string, without either rule breaking the
+other.
+
 `nextEpisode()` does the following:
 
 1. Bails if auto-next is off, a navigation is already in flight, or the page isn't
-   a watch page (`?page=watch`).
-2. Reads the episode number from the URL and validates it's a non-negative
-   integer.
-3. Looks for an anchor on the page pointing at the same `id` with `ep` one higher
-   — the site's own next-episode link. Falls back to rewriting the URL.
+   a watch page.
+2. Reads `?ep=` and validates it's a whole number. No `ep`, no advance.
+3. Looks for an anchor on the page pointing at the same series with `ep` one
+   higher — the site's own next-episode link. Falls back to setting `ep` on the
+   current URL, which leaves the path and every other param (`lang`, `id`, …)
+   untouched.
 4. Sets a `navigating` flag, shows a status message, and navigates.
 
 The flag is cleared on `pageshow` and `popstate`, so a back/forward navigation
@@ -159,11 +176,12 @@ on access, and that shouldn't take the script down with it.
 - **Tested by reasoning, not on the live sites.** The logic is covered by a
   headless test suite, but it has not been run against a real GoodShort session
   yet. Confirm it once with `DEBUG = true` before trusting it.
-- **The `reelfren.net` URL scheme is unverified.** It's behind the same
-  Cloudflare challenge as `dramafren.org`, so its watch pages couldn't be
-  inspected. The script assumes `?page=watch&id=…&ep=…` like the other mirrors.
-  If it does nothing there, `DEBUG = true` prints the `page` value it actually
-  found — that's the one line needed to fix it.
+- **The `reelfren.net` scheme is known but not yet proven live.** Its watch URLs
+  are path-based (`/watch/<type>/<id>-<slug>?ep=<n>&lang=<cc>`), which the script
+  now handles. It's still behind a Cloudflare challenge, so this has only been
+  exercised against the test harness, not a real browser session. If it does
+  nothing there, `DEBUG = true` logs the hostname, path and `page` value it
+  actually saw — that's the line needed to fix it.
 - **Assumes zero-based, sequential episodes.** If a series skips numbers or
   restarts numbering, the fallback URL will be wrong — though the site's own next
   link, when present, is always preferred and handles that correctly.
@@ -186,7 +204,7 @@ manager, no npm dependencies:
 node test/auto-next.test.js
 ```
 
-14 assertions covering:
+17 assertions covering:
 
 - following the site's own next-episode link
 - the `ep` increment fallback when no link is rendered
@@ -197,10 +215,30 @@ node test/auto-next.test.js
 - not advancing a looping video
 - the toggle persisting to `localStorage` and reflecting in the label
 - starting switched off when the stored preference says so
-- advancing on a `reelfren.net` watch page, keeping the subdomain intact when
-  falling back to `ep+1`, and staying put on a non-watch page there
+- on `reelfren.net`'s path-based URLs: bumping `?ep=` while keeping `?lang=`,
+  preferring the page's own next link, ignoring a link to a different series,
+  preserving the subdomain, doing nothing off a watch page, and doing nothing
+  when `?ep=` is absent
 
 ## Changelog
+
+### v1.3.0
+
+- **Support `reelfren.net`'s actual URL shape.** It doesn't use the
+  `?page=watch&id=…` scheme at all — watch pages are
+  `/watch/<type>/<id>-<slug>?ep=<n>&lang=<cc>`. v1.2.0 added the domain but
+  assumed the other mirrors' scheme, so it would have installed and then bailed
+  on every page. Watch-page detection now accepts either a `?page=watch` param or
+  a path starting `/watch/`.
+- **Series identity is scheme-agnostic.** Two URLs belong to the same series when
+  their path matches and, if an `id` param exists, that matches too. That covers
+  reelfren (path carries the id) and dramafren (id lives in the query string)
+  with one rule, so a next link for a different series is still ignored on both.
+- **The `ep` fallback edits the URL in place**, so the path, `lang` and any other
+  params survive. Previously it assumed nothing else was in the URL.
+- **`?ep=` is validated as a whole number** rather than parsed loosely, so a
+  watch page without an episode number no longer advances to `ep=NaN`.
+- The not-a-watch-page bail now logs the path as well as the hostname.
 
 ### v1.2.0
 

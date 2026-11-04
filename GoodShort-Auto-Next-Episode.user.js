@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         GoodShort Auto Next Episode
 // @namespace    https://github.com/poorloading/goodshort-auto-next-episode
-// @version      1.2.0
+// @version      1.3.0
 // @description  Automatically plays the next episode when the current video ends.
 // @author       poorloading
 // @license      MIT
@@ -89,16 +89,41 @@
     }
   }
 
-  // --- next episode --------------------------------------------------------
+  // --- watch pages ---------------------------------------------------------
+
+  // Two URL shapes are in use across the mirrors:
+  //   dramafren.org / shorttw.live  /?page=watch&id=<id>&ep=<n>
+  //   reelfren.net                  /watch/<type>/<id>-<slug>?ep=<n>&lang=<cc>
+  function isWatchPage(url) {
+    if (url.searchParams.get('page') === 'watch') return true;
+    return /^\/watch\//.test(url.pathname);
+  }
+
+  // Episode number from ?ep=, or null when it's missing or not a whole number.
+  function episodeOf(url) {
+    const raw = url.searchParams.get('ep');
+    if (raw === null || !/^\d+$/.test(raw)) return null;
+    return Number.parseInt(raw, 10);
+  }
+
+  // Same series? Compared on path plus the id param, so it holds for both
+  // shapes: on reelfren the series is the path, on dramafren it's ?id=.
+  function sameSeries(a, b) {
+    if (a.pathname !== b.pathname) return false;
+    const idA = a.searchParams.get('id');
+    const idB = b.searchParams.get('id');
+    if (idA || idB) return idA === idB;
+    return true;
+  }
 
   // The site's own next-episode link, if the page rendered one.
   function findNextLink(url, episode) {
     for (const anchor of document.querySelectorAll('a[href]')) {
       try {
         const candidate = new URL(anchor.href, location.href);
-        if (candidate.searchParams.get('page') !== 'watch') continue;
-        if (candidate.searchParams.get('id') !== url.searchParams.get('id')) continue;
-        if (Number.parseInt(candidate.searchParams.get('ep'), 10) !== episode + 1) continue;
+        if (!isWatchPage(candidate)) continue;
+        if (!sameSeries(candidate, url)) continue;
+        if (episodeOf(candidate) !== episode + 1) continue;
         return anchor.href;
       } catch (_) {
         /* malformed href, skip it */
@@ -111,15 +136,16 @@
     if (!enabled || navigating) return;
 
     const url = new URL(location.href);
-    if (url.searchParams.get('page') !== 'watch') return;
+    if (!isWatchPage(url)) return;
 
-    // Episodes are numbered from zero on this site.
-    const episode = Number.parseInt(url.searchParams.get('ep'), 10);
-    if (!Number.isInteger(episode) || episode < 0) return;
+    const episode = episodeOf(url);
+    if (episode === null) return;
 
+    // Prefer the page's own link, which knows about numbering quirks and any
+    // per-episode path changes. Otherwise bump ?ep= in place: everything else
+    // in the URL is left alone, so ?lang= and the path survive untouched.
     let target = findNextLink(url, episode);
     if (!target) {
-      // Fallback for players that don't render a next link on the watch page.
       url.searchParams.set('ep', String(episode + 1));
       target = url.href;
     }
@@ -175,11 +201,12 @@
     makeToggle();
     if (!enabled) return;
 
-    const page = new URL(location.href).searchParams.get('page');
-    if (page !== 'watch') {
+    const page = new URL(location.href);
+    if (!isWatchPage(page)) {
       // Not a watch page. Logged rather than swallowed: on a new mirror this is
       // the first thing to check when the script looks like it does nothing.
-      log('not a watch page (page=' + page + ') on ' + location.hostname);
+      log('not a watch page on ' + page.hostname + ' (path=' + page.pathname +
+          ', page=' + page.searchParams.get('page') + ')');
       return;
     }
 
@@ -233,5 +260,5 @@
     scheduleAttach();
   });
 
-  log('v1.2.0 ready on ' + location.hostname);
+  log('v1.3.0 ready on ' + location.hostname);
 })();
