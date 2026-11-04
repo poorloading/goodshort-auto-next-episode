@@ -9,7 +9,8 @@ itself. When the current episode ends, it opens the following one — no hunting
 for the next button, no losing your place when a short drama ends every ninety
 seconds.
 
-Works on the `dramafren.org` and `shorttw.live` mirrors.
+Works on the `dramafren.org`, `shorttw.live` and `reelfren.net` mirrors — bare
+domain or any subdomain.
 
 ---
 
@@ -74,8 +75,11 @@ check this repository for updates on its own.
 - A Chromium-based browser (Chrome, Edge, Brave, Opera) or Firefox
 - [Tampermonkey](https://www.tampermonkey.net/) v4.0+ or
   [Violentmonkey](https://violentmonkey.github.io/) v2.12+
-- Runs on `*://*.dramafren.org/*` and `*://*.shorttw.live/*`; no special `@grant`
-  permissions are requested
+- Runs on `*://*.dramafren.org/*`, `*://*.shorttw.live/*` and
+  `*://*.reelfren.net/*`; no special `@grant` permissions are requested
+
+A `*.` host in a match pattern covers the bare domain *and* every subdomain, and
+`/*` covers every path — so one entry per scheme is enough for a whole mirror.
 
 ## Usage
 
@@ -152,9 +156,14 @@ on access, and that shouldn't take the script down with it.
 
 ## Known limitations
 
-- **Tested by reasoning, not on the live site.** The logic is covered by a
+- **Tested by reasoning, not on the live sites.** The logic is covered by a
   headless test suite, but it has not been run against a real GoodShort session
   yet. Confirm it once with `DEBUG = true` before trusting it.
+- **The `reelfren.net` URL scheme is unverified.** It's behind the same
+  Cloudflare challenge as `dramafren.org`, so its watch pages couldn't be
+  inspected. The script assumes `?page=watch&id=…&ep=…` like the other mirrors.
+  If it does nothing there, `DEBUG = true` prints the `page` value it actually
+  found — that's the one line needed to fix it.
 - **Assumes zero-based, sequential episodes.** If a series skips numbers or
   restarts numbering, the fallback URL will be wrong — though the site's own next
   link, when present, is always preferred and handles that correctly.
@@ -177,7 +186,7 @@ manager, no npm dependencies:
 node test/auto-next.test.js
 ```
 
-11 assertions covering:
+14 assertions covering:
 
 - following the site's own next-episode link
 - the `ep` increment fallback when no link is rendered
@@ -188,8 +197,22 @@ node test/auto-next.test.js
 - not advancing a looping video
 - the toggle persisting to `localStorage` and reflecting in the label
 - starting switched off when the stored preference says so
+- advancing on a `reelfren.net` watch page, keeping the subdomain intact when
+  falling back to `ep+1`, and staying put on a non-watch page there
 
 ## Changelog
+
+### v1.2.0
+
+- Added `reelfren.net` to `@match`. `*.reelfren.net` covers the bare domain and
+  every subdomain, and `/*` covers every path, so both scheme lines are enough
+  for the whole mirror.
+- The "this isn't a watch page" bail now logs instead of disappearing at
+  `DEBUG = true`, along with the hostname it's running on and the `page` value
+  it found. On a new mirror that's the first thing to look at if the script
+  appears to do nothing.
+- Three tests added for the new mirror: a watch page advances, a subdomain is
+  preserved when falling back to `ep+1`, and a non-watch page does nothing.
 
 ### v1.1.1
 

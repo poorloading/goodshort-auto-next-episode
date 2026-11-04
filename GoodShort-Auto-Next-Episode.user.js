@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         GoodShort Auto Next Episode
 // @namespace    https://github.com/poorloading/goodshort-auto-next-episode
-// @version      1.1.1
+// @version      1.2.0
 // @description  Automatically plays the next episode when the current video ends.
 // @author       poorloading
 // @license      MIT
@@ -13,6 +13,8 @@
 // @match        http://*.dramafren.org/*
 // @match        https://*.shorttw.live/*
 // @match        http://*.shorttw.live/*
+// @match        https://*.reelfren.net/*
+// @match        http://*.reelfren.net/*
 // @grant        none
 // @run-at       document-idle
 // ==/UserScript==
@@ -172,7 +174,14 @@
   function attachVideo() {
     makeToggle();
     if (!enabled) return;
-    if (new URL(location.href).searchParams.get('page') !== 'watch') return;
+
+    const page = new URL(location.href).searchParams.get('page');
+    if (page !== 'watch') {
+      // Not a watch page. Logged rather than swallowed: on a new mirror this is
+      // the first thing to check when the script looks like it does nothing.
+      log('not a watch page (page=' + page + ') on ' + location.hostname);
+      return;
+    }
 
     for (const video of document.querySelectorAll('video')) {
       if (attachedVideos.has(video)) {
@@ -224,5 +233,5 @@
     scheduleAttach();
   });
 
-  log('v1.1.1 ready');
+  log('v1.2.0 ready on ' + location.hostname);
 })();

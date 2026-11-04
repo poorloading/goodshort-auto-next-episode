@@ -179,6 +179,41 @@ test('does nothing on a page that is not the watch page', () => {
     assert(!page.location.href.includes('ep='), 'should not have navigated, got ' + page.location.href);
 });
 
+// --- mirrors --------------------------------------------------------------
+
+test('works on a reelfren.net watch page', () => {
+    const video = makeVideo();
+    const page = createPage({ videos: [video], href: 'https://reelfren.net/?page=watch&id=xy&ep=2' });
+
+    video.emit('ended');
+
+    assert(
+        page.location.href === 'https://reelfren.net/?page=watch&id=xy&ep=3',
+        'expected ep=3 on reelfren.net, got ' + page.location.href
+    );
+});
+
+test('keeps the host it started on when falling back to ep+1', () => {
+    const video = makeVideo();
+    const page = createPage({ videos: [video], href: 'https://www.reelfren.net/?page=watch&id=xy&ep=7' });
+
+    video.emit('ended');
+
+    assert(
+        page.location.href === 'https://www.reelfren.net/?page=watch&id=xy&ep=8',
+        'expected the subdomain preserved, got ' + page.location.href
+    );
+});
+
+test('does nothing on a reelfren.net page that is not a watch page', () => {
+    const video = makeVideo();
+    const page = createPage({ videos: [video], href: 'https://reelfren.net/series' });
+
+    video.emit('ended');
+
+    assert(page.location.href === 'https://reelfren.net/series', 'should not have navigated');
+});
+
 // --- the end-of-video backup ----------------------------------------------
 
 test('does not skip the episode when the user scrubs to the end', () => {
