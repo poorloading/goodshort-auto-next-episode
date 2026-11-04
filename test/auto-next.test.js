@@ -25,6 +25,28 @@ function createPage(options = {}) {
     const appended = [];
     const location = { href: options.href || WATCH };
 
+    // The player's quality menu: a trigger that toggles a panel of options.
+    // Modelled so the "pick the highest rendition" logic is actually exercised.
+    const qualityLabels = options.quality || null;
+    let activeQuality = options.activeQuality || null;
+    let panelOpen = false;
+    let selectedQuality = null;
+
+    const qualityOptions = (qualityLabels || []).map(label => ({
+        tagName: 'BUTTON',
+        textContent: label,
+        classList: { contains: cls => cls === 'active' && label === activeQuality },
+        click() {
+            activeQuality = label;
+            selectedQuality = label;
+            panelOpen = false;
+        },
+    }));
+
+    const qualityTrigger = qualityLabels
+        ? { tagName: 'BUTTON', click() { panelOpen = !panelOpen; } }
+        : null;
+
     const document = {
         body: { appendChild(el) { appended.push(el); } },
         documentElement: {},
@@ -47,7 +69,13 @@ function createPage(options = {}) {
         querySelectorAll(selector) {
             if (selector === 'video') return videos;
             if (selector === 'a[href]') return links;
+            if (selector === 'button.quality-option') return panelOpen ? qualityOptions : [];
             return [];
+        },
+        querySelector(selector) {
+            if (selector === 'button[aria-label="Quality"]') return qualityTrigger;
+            if (selector === 'video') return videos[0] || null;
+            return null;
         },
         addEventListener() {},
         removeEventListener() {},
@@ -79,7 +107,19 @@ function createPage(options = {}) {
         store,
         videos,
         toggle: () => document.getElementById('gs-auto-next-toggle'),
-        flush() { timers.splice(0, timers.length).forEach(t => t.fn()); },
+        quality: {
+            get selected() { return selectedQuality; },
+            get active() { return activeQuality; },
+            get panelOpen() { return panelOpen; },
+            get optionsAvailable() { return qualityOptions.length > 0; },
+        },
+        // Timers can schedule further timers (the quality retry loop), so drain
+        // until quiet rather than one round.
+        flush(limit = 100) {
+            for (let i = 0; i < limit && timers.length; i++) {
+                timers.splice(0, timers.length).forEach(t => t.fn());
+            }
+        },
     };
 }
 
@@ -306,6 +346,68 @@ test('reflects the state in the button label', () => {
 test('starts switched off when the stored preference says so', () => {
     const page = createPage({ videos: [makeVideo()], enabled: false });
     assert(/OFF/.test(page.toggle().textContent), 'expected OFF from stored preference');
+});
+
+// --- quality ---------------------------------------------------------------
+
+test('picks the highest rendition when the player starts below it', () => {
+    const page = createPage({
+        videos: [makeVideo()],
+        quality: ['1080p', '720p', '480p'],
+        activeQuality: '720p',
+    });
+
+    page.flush();
+
+    assert(page.quality.selected === '1080p', 'expected 1080p, got ' + page.quality.selected);
+    assert(page.quality.active === '1080p', 'active should now be 1080p');
+});
+
+test('leaves the player alone when it is already at maximum', () => {
+    const page = createPage({
+        videos: [makeVideo()],
+        quality: ['1080p', '720p', '480p'],
+        activeQuality: '1080p',
+    });
+
+    page.flush();
+
+    assert(page.quality.selected === null, 'should not have re-selected, got ' + page.quality.selected);
+    assert(page.quality.panelOpen === false, 'panel should have been closed again');
+});
+
+test('does nothing when the player has no quality control', () => {
+    const page = createPage({ videos: [makeVideo()] });
+
+    page.flush();
+
+    assert(page.quality.selected === null, 'nothing to select');
+});
+
+test('still sets quality when auto-next is switched off', () => {
+    const page = createPage({
+        videos: [makeVideo()],
+        enabled: false,
+        quality: ['1080p', '720p'],
+        activeQuality: '720p',
+    });
+
+    page.flush();
+
+    assert(page.quality.selected === '1080p', 'quality is independent of the toggle');
+});
+
+test('does not touch quality on a page that is not a watch page', () => {
+    const page = createPage({
+        videos: [makeVideo()],
+        href: 'https://reelfren.net/browse',
+        quality: ['1080p', '720p'],
+        activeQuality: '720p',
+    });
+
+    page.flush();
+
+    assert(page.quality.selected === null, 'should not have opened the panel');
 });
 
 // --- report ----------------------------------------------------------------

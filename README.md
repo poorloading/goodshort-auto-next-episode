@@ -5,9 +5,9 @@
 [![Tampermonkey](https://img.shields.io/badge/userscript-Tampermonkey-orange)](GoodShort-Auto-Next-Episode.user.js)
 
 A Tampermonkey userscript that plays the next episode of a GoodShort series by
-itself. When the current episode ends, it opens the following one — no hunting
-for the next button, no losing your place when a short drama ends every ninety
-seconds.
+itself, at the highest quality the site offers. When the current episode ends it
+opens the following one — no hunting for the next button, no losing your place
+when a short drama ends every ninety seconds.
 
 Works on the `dramafren.org`, `shorttw.live` and `reelfren.net` mirrors — bare
 domain or any subdomain.
@@ -44,6 +44,9 @@ domain or any subdomain.
 - 🔊 **Sound after autoplay is blocked.** If the browser refuses to autoplay with
   audio, playback starts muted and the sound is restored on your first click or
   key press — rather than staying silent forever.
+- 🎚️ **Max quality, automatically.** Opens the player's own quality menu and picks
+  the highest rendition on offer (1080p where the site has it), instead of
+  settling for the 720p the player defaults to.
 
 ## Installation
 
@@ -106,6 +109,9 @@ All tunables are constants at the top of the file:
 | `APPLY_DELAY_MS` | `150` | Debounce window for DOM mutations before the attach pass runs. |
 | `END_THRESHOLD_S` | `0.35` | How close to the end counts as "finished" for the `timeupdate` backup. |
 | `MESSAGE_MS` | `4000` | How long a status message sits before reverting to the toggle label. |
+| `MAX_QUALITY` | `true` | Pick the highest rendition the player offers. Set `false` to leave quality alone. |
+| `QUALITY_RETRY_MS` | `400` | How often to look for the quality control while the player initialises. |
+| `QUALITY_MAX_TRIES` | `15` | Retry budget (~6s) before giving up on finding a quality control. |
 
 The episode number comes from `?ep=` on the URL and the fallback increments it, so
 the script never needs to know whether a site counts from zero or one. Only the
@@ -152,6 +158,32 @@ other.
    untouched.
 4. Sets a `navigating` flag, shows a status message, and navigates.
 
+### Quality
+
+The player has no API for this, and each rendition in `qualityList` carries its
+own signed `auth_key`, so the stream URL can't simply be rewritten from `_720` to
+`_1080` — the signature wouldn't match. The only reliable route is the site's own
+quality menu, which is what a user would click anyway:
+
+1. Find `button[aria-label="Quality"]` and click it to open the panel.
+2. Read every `button.quality-option`, rank by the number in its label, and pick
+   the highest.
+3. If that option is already `active`, close the panel and stop — no flicker and
+   no pointless reload.
+4. Otherwise click it, which swaps the stream and closes the panel.
+
+The panel is opened at most once per attempt: the trigger is a toggle, so
+retrying the click would flicker it open and shut. If the player has no quality
+control at all, the script retries for about six seconds and then leaves it
+alone.
+
+Quality is deliberately **independent of the auto-next toggle** — switching off
+auto-advance shouldn't drop you back to 720p. Set `MAX_QUALITY = false` to turn it
+off.
+
+It runs once per page load. If you pick a lower quality by hand afterwards, the
+script won't fight you.
+
 The flag is cleared on `pageshow` and `popstate`, so a back/forward navigation
 can't leave it stuck. Video listeners are tracked in a `WeakSet`, so a `<video>`
 element is never wired twice and the tracking is garbage-collected with the
@@ -173,15 +205,15 @@ on access, and that shouldn't take the script down with it.
 
 ## Known limitations
 
-- **Tested by reasoning, not on the live sites.** The logic is covered by a
-  headless test suite, but it has not been run against a real GoodShort session
-  yet. Confirm it once with `DEBUG = true` before trusting it.
-- **The `reelfren.net` scheme is known but not yet proven live.** Its watch URLs
-  are path-based (`/watch/<type>/<id>-<slug>?ep=<n>&lang=<cc>`), which the script
-  now handles. It's still behind a Cloudflare challenge, so this has only been
-  exercised against the test harness, not a real browser session. If it does
-  nothing there, `DEBUG = true` logs the hostname, path and `page` value it
-  actually saw — that's the line needed to fix it.
+- **Auto-advance is tested by reasoning, not on a live session.** The logic is
+  covered by a headless suite, and quality selection was confirmed against
+  reelfren's live player, but nobody has yet watched an episode end and auto-advance
+  in a real browser. Confirm it once with `DEBUG = true`.
+- **The quality bump relies on the player's own menu.** It looks for
+  `button[aria-label="Quality"]` and `button.quality-option`. Verified on
+  reelfren's player; if another mirror's player labels those differently, quality
+  selection won't fire (auto-next still works). `DEBUG = true` reports
+  `opening quality panel` when it engages.
 - **Assumes zero-based, sequential episodes.** If a series skips numbers or
   restarts numbering, the fallback URL will be wrong — though the site's own next
   link, when present, is always preferred and handles that correctly.
@@ -191,9 +223,10 @@ on access, and that shouldn't take the script down with it.
 
 ## Privacy
 
-The script runs entirely in your browser. It reads the page URL and finds anchors
-already on the page. It makes **no network requests** of its own, sends nothing
-anywhere, and stores only a single on/off flag in `localStorage`.
+The script runs entirely in your browser. It reads the page URL, finds anchors
+already on the page, and clicks the player's own quality control. It makes **no
+network requests** of its own, sends nothing anywhere, and stores only a single
+on/off flag in `localStorage`.
 
 ## Testing
 
@@ -204,7 +237,7 @@ manager, no npm dependencies:
 node test/auto-next.test.js
 ```
 
-17 assertions covering:
+22 assertions covering:
 
 - following the site's own next-episode link
 - the `ep` increment fallback when no link is rendered
@@ -219,8 +252,27 @@ node test/auto-next.test.js
   preferring the page's own next link, ignoring a link to a different series,
   preserving the subdomain, doing nothing off a watch page, and doing nothing
   when `?ep=` is absent
+- quality selection: picking the highest rendition, leaving an already-max player
+  untouched, coping with a player that has no quality control, applying while
+  auto-next is off, and staying out of it on a non-watch page
 
 ## Changelog
+
+### v1.4.0
+
+- **Automatically picks the highest quality.** The player defaults to 720p even
+  when the API's `qualityList` offers 1080p and 480p. The script now opens the
+  player's own quality menu, ranks the options and selects the highest, then
+  leaves it alone.
+- Driving the menu rather than rewriting the stream URL is deliberate: every
+  rendition has its own signed `auth_key`, so swapping `_720` for `_1080` in a URL
+  produces a signature mismatch.
+- If the player is already at maximum, the panel is closed again and nothing is
+  re-selected, so there's no flicker.
+- Quality is independent of the auto-next toggle; `MAX_QUALITY = false` disables
+  it. It runs once per page load and won't argue with a manual choice.
+- Verified against reelfren's live player: 720p → 1080p, video 1080×1920.
+- Five tests added for the rendition selection.
 
 ### v1.3.0
 

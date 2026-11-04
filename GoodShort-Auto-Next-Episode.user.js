@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         GoodShort Auto Next Episode
 // @namespace    https://github.com/poorloading/goodshort-auto-next-episode
-// @version      1.3.0
+// @version      1.4.0
 // @description  Automatically plays the next episode when the current video ends.
 // @author       poorloading
 // @license      MIT
@@ -25,7 +25,14 @@
   const APPLY_DELAY_MS = 150;   // debounce for DOM churn
   const END_THRESHOLD_S = 0.35; // backup trigger: how near the end counts as finished
   const MESSAGE_MS = 4000;      // how long a status message stays before reverting
+  const MAX_QUALITY = true;     // pick the highest rendition the player offers
+  const QUALITY_RETRY_MS = 400; // how often to look for the quality control
+  const QUALITY_MAX_TRIES = 15; // ~6s of looking, then give up quietly
   const KEY = 'goodshort-auto-next-enabled';
+
+  // The player's own quality menu. Two elements, driven like a user would.
+  const QUALITY_TRIGGER = 'button[aria-label="Quality"]';
+  const QUALITY_OPTION = 'button.quality-option';
 
   const log = (...args) => { if (DEBUG) console.log('[auto-next]', ...args); };
 
@@ -52,6 +59,9 @@
   let navigating = false;
   let attachTimer = null;
   let messageTimer = null;
+  let qualityTries = 0;
+  let qualitySettled = false;
+  let qualityPanelOpened = false;
 
   // --- toggle button -------------------------------------------------------
 
@@ -87,6 +97,72 @@
     if (message) {
       messageTimer = setTimeout(() => updateButton(), MESSAGE_MS);
     }
+  }
+
+  // --- quality -------------------------------------------------------------
+
+  // The player has no API for this and each rendition has its own signed
+  // auth_key, so the URL can't simply be rewritten. The site's own panel is the
+  // only reliable route, and it's what a user would click anyway.
+  function qualityRank(label) {
+    const match = /(\d{3,4})/.exec(String(label || ''));
+    return match ? Number.parseInt(match[1], 10) : -1;
+  }
+
+  function closeQualityPanel() {
+    const trigger = document.querySelector(QUALITY_TRIGGER);
+    if (trigger) trigger.click();
+  }
+
+  function retryQuality() {
+    if (qualitySettled || qualityTries >= QUALITY_MAX_TRIES) return;
+    qualityTries++;
+    setTimeout(applyMaxQuality, QUALITY_RETRY_MS);
+  }
+
+  function applyMaxQuality() {
+    if (!MAX_QUALITY || qualitySettled) return;
+
+    const options = Array.from(document.querySelectorAll(QUALITY_OPTION));
+
+    if (!options.length) {
+      // Only click the trigger once: it toggles the panel, so retrying the
+      // click would flicker it open and shut.
+      if (!qualityPanelOpened) {
+        if (!document.querySelector('video')) {
+          retryQuality();
+          return;
+        }
+        const trigger = document.querySelector(QUALITY_TRIGGER);
+        if (!trigger) {
+          // Player has no quality control; nothing to do here.
+          retryQuality();
+          return;
+        }
+        log('opening quality panel');
+        trigger.click();
+        qualityPanelOpened = true;
+      }
+      retryQuality();
+      return;
+    }
+
+    const best = options.reduce(
+      (a, b) => (qualityRank(b.textContent) > qualityRank(a.textContent) ? b : a)
+    );
+    const active = options.find((option) => option.classList.contains('active'));
+
+    if (active && qualityRank(active.textContent) >= qualityRank(best.textContent)) {
+      log('quality already at max (' + active.textContent.trim() + ')');
+      if (qualityPanelOpened) closeQualityPanel();
+      qualitySettled = true;
+      return;
+    }
+
+    log('quality ' + (active ? active.textContent.trim() : '?') + ' -> ' + best.textContent.trim());
+    best.click();
+    qualitySettled = true;
+    qualityPanelOpened = false; // the player closes the panel on selection
   }
 
   // --- watch pages ---------------------------------------------------------
@@ -199,7 +275,6 @@
 
   function attachVideo() {
     makeToggle();
-    if (!enabled) return;
 
     const page = new URL(location.href);
     if (!isWatchPage(page)) {
@@ -209,6 +284,12 @@
           ', page=' + page.searchParams.get('page') + ')');
       return;
     }
+
+    // Independent of the auto-next toggle: turning off auto-advance shouldn't
+    // drop you back to a lower rendition.
+    applyMaxQuality();
+
+    if (!enabled) return;
 
     for (const video of document.querySelectorAll('video')) {
       if (attachedVideos.has(video)) {
@@ -260,5 +341,5 @@
     scheduleAttach();
   });
 
-  log('v1.3.0 ready on ' + location.hostname);
+  log('v1.4.0 ready on ' + location.hostname);
 })();
