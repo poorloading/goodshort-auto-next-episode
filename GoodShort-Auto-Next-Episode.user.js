@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         GoodShort Auto Next Episode
 // @namespace    https://github.com/poorloading/goodshort-auto-next-episode
-// @version      1.6.0
+// @version      1.7.0
 // @description  Automatically plays the next episode when the current video ends.
 // @author       poorloading
 // @license      MIT
@@ -13,8 +13,6 @@
 // @match        http://*.dramafren.org/*
 // @match        https://*.shorttw.live/*
 // @match        http://*.shorttw.live/*
-// @match        https://*.reelfren.net/*
-// @match        http://*.reelfren.net/*
 // @grant        none
 // @run-at       document-idle
 // ==/UserScript==
@@ -211,12 +209,9 @@
 
   // --- watch pages ---------------------------------------------------------
 
-  // Two URL shapes are in use across the mirrors:
-  //   dramafren.org / shorttw.live  /?page=watch&id=<id>&ep=<n>
-  //   reelfren.net                  /watch/<type>/<id>-<slug>?ep=<n>&lang=<cc>
+  // Watch pages look like /?page=watch&id=<id>&ep=<n> on both mirrors.
   function isWatchPage(url) {
-    if (url.searchParams.get('page') === 'watch') return true;
-    return /^\/watch\//.test(url.pathname);
+    return url.searchParams.get('page') === 'watch';
   }
 
   // Episode number from ?ep=, or null when it's missing or not a whole number.
@@ -226,8 +221,10 @@
     return Number.parseInt(raw, 10);
   }
 
-  // Same series? Compared on path plus the id param, so it holds for both
-  // shapes: on reelfren the series is the path, on dramafren it's ?id=.
+  // Same series? The path is the same for every watch page on both mirrors;
+  // the series is identified by ?id=. The path comparison is a harmless extra
+  // guard and would also catch a different series that reuses an id across
+  // paths.
   function sameSeries(a, b) {
     if (a.pathname !== b.pathname) return false;
     const idA = a.searchParams.get('id');
@@ -268,7 +265,7 @@
 
     // Prefer the page's own link, which knows about numbering quirks and any
     // per-episode path changes. Otherwise bump ?ep= in place: everything else
-    // in the URL is left alone, so ?lang= and the path survive untouched.
+    // in the URL is left alone, including ?id= and the path.
     let target = findNextLink(url, episode);
     if (!target) {
       url.searchParams.set('ep', String(episode + 1));
@@ -431,5 +428,5 @@
     scheduleAttach();
   });
 
-  log('v1.6.0 ready on ' + location.hostname);
+  log('v1.7.0 ready on ' + location.hostname);
 })();

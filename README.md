@@ -9,8 +9,9 @@ itself, at the highest quality the site offers. When the current episode ends it
 moves straight on to the following one — no hunting for the next button, no losing
 your place when a short drama ends every ninety seconds.
 
-Works on the `dramafren.org`, `shorttw.live` and `reelfren.net` mirrors — bare
-domain or any subdomain.
+Works on the `dramafren.org` and `shorttw.live` mirrors — bare domain or any
+subdomain. `reelfren.net` is **not supported** as of v1.7.0: the site has too
+many issues, so the script no longer loads there at all.
 
 ---
 
@@ -84,8 +85,8 @@ check this repository for updates on its own.
 - A Chromium-based browser (Chrome, Edge, Brave, Opera) or Firefox
 - [Tampermonkey](https://www.tampermonkey.net/) v4.0+ or
   [Violentmonkey](https://violentmonkey.github.io/) v2.12+
-- Runs on `*://*.dramafren.org/*`, `*://*.shorttw.live/*` and
-  `*://*.reelfren.net/*`; no special `@grant` permissions are requested
+- Runs on `*://*.dramafren.org/*` and `*://*.shorttw.live/*` only; no special
+  `@grant` permissions are requested
 
 A `*.` host in a match pattern covers the bare domain *and* every subdomain, and
 `/*` covers every path — so one entry per scheme is enough for a whole mirror.
@@ -140,18 +141,15 @@ Three triggers, all funnelling into one debounced pass:
 
 ### Watch-page detection
 
-The mirrors don't agree on URL shape, so both are recognised:
+The mirrors all use the same watch shape, so detection is a single check:
 
 | Mirror | Shape |
 | --- | --- |
 | `dramafren.org`, `shorttw.live` | `/?page=watch&id=<id>&ep=<n>` |
-| `reelfren.net` | `/watch/<type>/<id>-<slug>?ep=<n>&lang=<cc>` |
 
-Either a `?page=watch` param, or a path beginning `/watch/`, counts as a watch
-page. Two URLs are treated as the same series if their **path** matches and, when
-an `id` param is present, that matches too — so `reelfren.net` is identified by
-its path and `dramafren.org` by its query string, without either rule breaking the
-other.
+A `?page=watch` param counts as a watch page. Two URLs are treated as the same
+series when their path matches and, when an `id` param is present, that matches
+too — in practice that means the `?id=` param identifies the series.
 
 `nextEpisode()` does the following:
 
@@ -164,8 +162,8 @@ other.
    already on its last slide, it stops there rather than guessing a URL.
 4. Falls back to the site's own next-episode anchor when there's no carousel:
    the first one pointing at the same series with `ep` one higher.
-5. Falls back again to setting `ep` on the current URL, which leaves the path and
-   every other param (`lang`, `id`, …) untouched.
+5. Falls back again to setting `ep` on the current URL, which leaves every other
+   param (`id`, …) untouched.
 6. Sets a `navigating` flag, shows a status message, and advances.
 
 ### Quality
@@ -235,17 +233,17 @@ on access, and that shouldn't take the script down with it.
 
 ## Known limitations
 
-- **Auto-advance hasn't been watched end-to-end in a live session.** The logic is
-  covered by a headless suite, and quality selection, in-place advancing and the
-  `ended` handling were all confirmed against reelfren's live player (an episode
-  advanced in place and playback resumed at 1080p) — but a naturally finishing
-  episode hasn't been watched in a real browser. Confirm it once with
-  `DEBUG = true`.
+- **Nothing has been verified live on the supported mirrors.** All the live
+  verification (quality selection, in-place advancing, the black-screen fixes)
+  was done on reelfren.net, which has since been dropped as unsupported. On
+  `dramafren.org` and `shorttw.live` the script is covered only by the headless
+  suite so far — playback, quality selection and the carousel advance all need
+  one live confirmation. Set `DEBUG = true` and watch an episode end.
 - **The quality bump relies on the player's own menu.** It looks for
-  `button[aria-label="Quality"]` and `button.quality-option`. Verified on
-  reelfren's player; if another mirror's player labels those differently, quality
-  selection won't fire (auto-next still works). `DEBUG = true` reports
-  `opening quality panel` when it engages.
+  `button[aria-label="Quality"]` and `button.quality-option`; if the remaining
+  mirrors' player labels those differently, quality selection won't fire
+  (auto-next still works). `DEBUG = true` reports `opening quality panel` when it
+  engages.
 - **In-place advancing relies on a Swiper carousel.** It looks for `.watch-swiper`
   with a `swiper` instance. Where that's absent the script falls back to a normal
   navigation, which works but costs a page load and resets the player.
@@ -272,21 +270,18 @@ manager, no npm dependencies:
 node test/auto-next.test.js
 ```
 
-29 assertions covering:
+24 assertions covering:
 
 - following the site's own next-episode link
 - the `ep` increment fallback when no link is rendered
 - ignoring a next link belonging to a different series
-- doing nothing when the toggle is off, or on a non-watch page
+- doing nothing when the toggle is off, or on a non-watch page, or on a watch
+  page with no episode number
 - not advancing when you scrub to the end (`seeking`)
 - advancing from `timeupdate` when the player never fires `ended`
 - not advancing a looping video
 - the toggle persisting to `localStorage` and reflecting in the label
 - starting switched off when the stored preference says so
-- on `reelfren.net`'s path-based URLs: bumping `?ep=` while keeping `?lang=`,
-  preferring the page's own next link, ignoring a link to a different series,
-  preserving the subdomain, doing nothing off a watch page, and doing nothing
-  when `?ep=` is absent
 - quality selection: picking the highest rendition, leaving an already-max player
   untouched, coping with a player that has no quality control, applying while
   auto-next is off, and staying out of it on a non-watch page
@@ -303,6 +298,21 @@ guard, the in-place advance, the quality reset, the playback nudge or the
 decoration.
 
 ## Changelog
+
+### v1.7.0
+
+- **Removed: `reelfren.net` support.** The site has too many issues, so the
+  script no longer loads there: both `@match` lines are gone, and the
+  reelfren-only `/watch/<type>/<id>-<slug>` watch-page detection was removed
+  with it. Watch-page detection is a single `?page=watch` check, which covers
+  `dramafren.org` and `shorttw.live` as before.
+- The reelfren-specific tests were removed; in their place a watch page with no
+  `?ep=` number is explicitly covered for the remaining mirrors. 24 assertions,
+  0 failed.
+- Note for users of the other mirrors: all live verification so far happened on
+  reelfren. The supported mirrors share the player markup in principle, but
+  nothing has been checked in a real browser there yet — see **Known
+  limitations**.
 
 ### v1.6.0
 

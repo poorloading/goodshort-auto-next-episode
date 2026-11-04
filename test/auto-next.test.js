@@ -294,75 +294,18 @@ test('does nothing on a page that is not the watch page', () => {
     assert(!page.location.href.includes('ep='), 'should not have navigated, got ' + page.location.href);
 });
 
-// --- reelfren.net (path-based watch URLs) ---------------------------------
-
-const REEL =
-    'https://reelfren.net/watch/storyreel/877541-my-catfish-girlfriend-didn-t-know-the-real-me';
-
-test('advances a reelfren.net episode by bumping ?ep= and keeps ?lang=', () => {
-    const video = makeVideo();
-    const page = createPage({ videos: [video], href: REEL + '?ep=5&lang=en' });
-
-    video.emit('ended');
-
-    assert(
-        page.location.href === REEL + '?ep=6&lang=en',
-        'expected ep=6 with lang kept, got ' + page.location.href
-    );
-});
-
-test("prefers reelfren's own next-episode link when one exists", () => {
-    const video = makeVideo();
-    const next = REEL + '?ep=6&lang=en';
-    const page = createPage({ videos: [video], href: REEL + '?ep=5&lang=en', links: [{ href: next }] });
-
-    video.emit('ended');
-
-    assert(page.location.href === next, 'expected the next link, got ' + page.location.href);
-});
-
-test('ignores a reelfren next link for a different series', () => {
-    const video = makeVideo();
-    const other = 'https://reelfren.net/watch/storyreel/999999-some-other-drama?ep=6&lang=en';
-    const page = createPage({ videos: [video], href: REEL + '?ep=5&lang=en', links: [{ href: other }] });
-
-    video.emit('ended');
-
-    assert(
-        page.location.href === REEL + '?ep=6&lang=en',
-        'should have ignored the other series, got ' + page.location.href
-    );
-});
-
-test('keeps the host it started on when falling back to ep+1', () => {
-    const video = makeVideo();
-    const href = 'https://www.reelfren.net/watch/storyreel/877541-my-catfish-girlfriend-didn-t-know-the-real-me?ep=7';
-    const page = createPage({ videos: [video], href });
-
-    video.emit('ended');
-
-    assert(
-        page.location.href === href.replace('ep=7', 'ep=8'),
-        'expected the subdomain preserved, got ' + page.location.href
-    );
-});
-
-test('does nothing on a reelfren.net page that is not a watch page', () => {
-    const video = makeVideo();
-    const page = createPage({ videos: [video], href: 'https://reelfren.net/browse' });
-
-    video.emit('ended');
-
-    assert(page.location.href === 'https://reelfren.net/browse', 'should not have navigated');
-});
+// --- episodes without an ep parameter ---------------------------------------
 
 test('ignores a watch page with no episode number', () => {
     const video = makeVideo();
-    const page = createPage({ videos: [video], href: REEL });
+    const page = createPage({ videos: [video], href: 'https://goodshort.dramafren.org/?page=watch&id=abc' });
 
     video.emit('ended');
 
-    assert(page.location.href === REEL, 'should not navigate without an ep, got ' + page.location.href);
+    assert(
+        page.location.href === 'https://goodshort.dramafren.org/?page=watch&id=abc',
+        'should not navigate without an ep, got ' + page.location.href
+    );
 });
 
 // --- the end-of-video backup ----------------------------------------------
@@ -475,7 +418,7 @@ test('still sets quality when auto-next is switched off', () => {
 test('does not touch quality on a page that is not a watch page', () => {
     const page = createPage({
         videos: [makeVideo()],
-        href: 'https://reelfren.net/browse',
+        href: 'https://goodshort.dramafren.org/browse',
         quality: ['1080p', '720p'],
         activeQuality: '720p',
     });
@@ -503,7 +446,7 @@ test('advances through the episode swiper without reloading the page', () => {
 
 test('does not advance past the last slide', () => {
     const video = makeVideo();
-    const href = REEL + '?ep=36&lang=en';
+    const href = 'https://goodshort.dramafren.org/?page=watch&id=abc&ep=36';
     const page = createPage({
         videos: [video],
         href,
@@ -521,7 +464,7 @@ test('re-applies max quality after the new episode loads', () => {
     const video = makeVideo();
     const page = createPage({
         videos: [video],
-        href: REEL + '?ep=5&lang=en',
+        href: 'https://goodshort.dramafren.org/?page=watch&id=abc&ep=5',
         quality: ['1080p', '720p', '480p'],
         activeQuality: '720p',
         swiper: { slides: 36, activeIndex: 4, dropQualityOnAdvance: true },
@@ -535,7 +478,7 @@ test('re-applies max quality after the new episode loads', () => {
 
     assert(page.quality.selections.length === 2, 'expected quality to be re-selected, got ' + page.quality.selections.length);
     assert(page.quality.selected === '1080p', 'the new episode should be back at 1080p, got ' + page.quality.selected);
-    assert(page.location.href === REEL + '?ep=5&lang=en', 'should still be a same-page advance');
+    assert(page.location.href === 'https://goodshort.dramafren.org/?page=watch&id=abc&ep=5', 'should still be a same-page advance');
 });
 
 // --- playback --------------------------------------------------------------
@@ -574,7 +517,7 @@ test('starts the new episode even though it mounts paused and unloaded', () => {
     const video = makeVideo({ readyState: 2, src: 'https://cdn.example/episode5.m3u8' });
     const page = createPage({
         videos: [video],
-        href: REEL + '?ep=5&lang=en',
+        href: 'https://goodshort.dramafren.org/?page=watch&id=abc&ep=5',
         swiper: { slides: 36, activeIndex: 4, resetPlaybackOnAdvance: true },
     });
 
