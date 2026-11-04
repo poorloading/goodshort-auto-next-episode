@@ -34,10 +34,10 @@ many issues, so the script no longer loads there at all.
 
 - ⏭️ **Next episode, automatically.** Listens for the video's `ended` event and
   moves to the next episode.
-- 🎬 **Moves in place where it can.** These sites already render every episode as a
-  slide in one carousel, so the script steps that carousel instead of reloading the
-  page. Faster, and the player keeps whatever state you set up yourself — including
-  the site's own fullscreen button.
+- 🎬 **Moves in place where it can.** dramafren's player swaps episodes into the
+  same `<video>` via its own `switchEpisode()` — the script drives that. On a
+  carousel-style site it steps the carousel instead. No page load either way,
+  and the player keeps whatever state you set up yourself.
 - 🔗 **Uses the site's own link when it exists.** If the page rendered a
   next-episode anchor, that's followed. Otherwise the URL's `ep` number is
   incremented as a fallback, so it still works on players that render no link.
@@ -156,22 +156,39 @@ too — in practice that means the `?id=` param identifies the series.
 1. Bails if auto-next is off, a navigation is already in flight, or the page isn't
    a watch page.
 2. Reads `?ep=` and validates it's a whole number. No `ep`, no advance.
-3. Tries to **advance in place** first: these sites render one slide per episode in
-   a Swiper carousel, so stepping it (`element.swiper.slideNext()`) swaps the
-   episode without a page load. If the carousel is
-   already on its last slide, it stops there rather than guessing a URL.
-4. Falls back to the site's own next-episode anchor when there's no carousel:
-   the first one pointing at the same series with `ep` one higher.
+3. Tries to **advance in place** first, in whichever shape this player has:
+   - dramafren's scripted player (`switchEpisode()` + `goToNextEp()` page
+     globals) — the next episode is fetched and swapped into the same
+     `<video>`, and the URL is updated via `history.pushState`.
+   - A Swiper carousel (`element.swiper.slideNext()`) for carousel markup.
+   Either way, if the end of the series is reached it stops rather than guessing
+   a URL.
+4. Falls back to the site's own next-episode anchor when there's no in-place
+   player to drive: the first one pointing at the same series with `ep` one
+   higher.
 5. Falls back again to setting `ep` on the current URL, which leaves every other
    param (`id`, …) untouched.
 6. Sets a `navigating` flag, shows a status message, and advances.
 
 ### Quality
 
-The player has no API for this, and each rendition in `qualityList` carries its
-own signed `auth_key`, so the stream URL can't simply be rewritten from `_720` to
-`_1080` — the signature wouldn't match. The only reliable route is the site's own
-quality menu, which is what a user would click anyway:
+Each rendition is a separately signed URL, so the stream can't simply be
+rewritten — the signature wouldn't match. Which route the script takes, though,
+depends on the player:
+
+**dramafren's scripted player.** It exposes `availableQualities` (the current
+episode's renditions with signed URLs), a live `hls` instance whose `.url` is
+the rendition actually playing, and its own `changeQuality(url)`. The script
+ranks the labels (`1080P` → 1080), picks the highest, and if the one currently
+playing is already the highest, leaves it alone.
+
+One wrinkle: right after an in-place advance, `availableQualities` still
+describes the **old** episode until the player's fetch completes. Acting on it
+would stream stale URLs — so after every advance the script waits for the
+array to be replaced before re-applying max quality, retrying a few times and
+then giving up quietly if the fetch never lands.
+
+**Generic panel route.** Otherwise the script does it the way a user would:
 
 1. Find `button[aria-label="Quality"]` and click it to open the panel.
 2. Read every `button.quality-option`, rank by the number in its label, and pick
@@ -189,10 +206,10 @@ Quality is deliberately **independent of the auto-next toggle** — switching of
 auto-advance shouldn't drop you back to 720p. Set `MAX_QUALITY = false` to turn it
 off.
 
-It's applied once per episode. An in-place advance swaps in a new `<video>` at the
-player's default rendition, so the selection runs again about a second after the
-slide changes. Between episodes it doesn't keep poking the menu, so if you pick a
-lower quality by hand it won't fight you.
+It's applied once per episode, and again after each advance, because the new
+episode arrives at the player's default rendition. Between episodes it doesn't
+keep poking the menu, so if you pick a lower quality by hand it won't fight
+you.
 
 ### Playback
 
@@ -233,20 +250,29 @@ on access, and that shouldn't take the script down with it.
 
 ## Known limitations
 
-- **Nothing has been verified live on the supported mirrors.** All the live
-  verification (quality selection, in-place advancing, the black-screen fixes)
-  was done on reelfren.net, which has since been dropped as unsupported. On
-  `dramafren.org` and `shorttw.live` the script is covered only by the headless
-  suite so far — playback, quality selection and the carousel advance all need
-  one live confirmation. Set `DEBUG = true` and watch an episode end.
-- **The quality bump relies on the player's own menu.** It looks for
-  `button[aria-label="Quality"]` and `button.quality-option`; if the remaining
-  mirrors' player labels those differently, quality selection won't fire
-  (auto-next still works). `DEBUG = true` reports `opening quality panel` when it
-  engages.
-- **In-place advancing relies on a Swiper carousel.** It looks for `.watch-swiper`
-  with a `swiper` instance. Where that's absent the script falls back to a normal
-  navigation, which works but costs a page load and resets the player.
+- **`shorttw.live` looks dead.** The bare domain serves a generic LiteSpeed
+  `404 Not Found`, and `www.shorttw.live` / `goodshort.shorttw.live` don't have
+  DNS records. Nothing there can be tested until the mirror comes back; the
+  `@match` line is harmless if it does.
+- **dramafren.org has been verified live.** On a real watch page: the toggle
+  renders, the quality stream was switched to 1080P automatically, `ended`
+  advanced the episode **in place** (same `<video>`, URL updated via
+  `pushState`), and playback resumed at 1080p. `shorttw.live` has not been
+  exercised at all. The black-screen playback fixes were developed on
+  reelfren.net; they exercised fine on dramafren too, but a pause/stall in odd
+  combinations is still worth reporting with `DEBUG = true`.
+- **The generic quality route relies on the player's own menu.** It looks for
+  `button[aria-label="Quality"]` and `button.quality-option`. No supported
+  mirror is known to render those right now; the dramafren route doesn't use
+  them. If a future mirror has a differently-labelled menu, quality selection
+  won't fire there (auto-next still works). `DEBUG = true` reports
+  `opening quality panel` when it engages.
+- **In-place advancing relies on the player exposing its internals.**
+  dramafren is driven through its own globals (`switchEpisode`, `goToNextEp`,
+  `availableQualities`, `hls`, `changeQuality`); a carousel-style player is
+  driven through `.watch-swiper`. On any other mirror, neither exists and the
+  script falls back to a normal navigation — which works but costs a page
+  load and resets the player.
 - **Assumes zero-based, sequential episodes.** If a series skips numbers or
   restarts numbering, the fallback URL will be wrong — though the site's own next
   link, when present, is always preferred and handles that correctly.
@@ -257,9 +283,9 @@ on access, and that shouldn't take the script down with it.
 ## Privacy
 
 The script runs entirely in your browser. It reads the page URL, finds anchors
-already on the page, drives the player's own quality menu and steps the site's own
-carousel. It makes **no network requests** of its own, sends nothing anywhere, and
-stores only one on/off flag in `localStorage`.
+already on the page, drives the player's own quality controls and steps the
+site's own episode picker or carousel. It makes **no network requests** of its
+own, sends nothing anywhere, and stores only one on/off flag in `localStorage`.
 
 ## Testing
 
@@ -270,7 +296,7 @@ manager, no npm dependencies:
 node test/auto-next.test.js
 ```
 
-24 assertions covering:
+29 assertions covering:
 
 - following the site's own next-episode link
 - the `ep` increment fallback when no link is rendered
@@ -291,13 +317,45 @@ node test/auto-next.test.js
 - playback: a pause surviving another attach pass, new media still getting its own
   autoplay, a new episode being started despite mounting paused at `readyState 0`,
   and a video that has not loaded yet still getting a play attempt
+- dramafren's SPA player: advancing via its own `switchEpisode` without
+  reloading, applying max quality on load, leaving an already-max player alone,
+  waiting for the fresh quality list after an advance instead of streaming
+  stale URLs, and stopping at the last episode
 
 The suite is checked by mutation as well as by passing: removing the autoplay
-guard, the in-place advance, the quality reset, the playback nudge or the
-`readyState` fix each makes its tests fail, so the assertions aren't just
-decoration.
+guard, the in-place advance, the quality reset, the playback nudge, the
+`readyState` fix or the stale-qualities guard each makes its tests fail, so the
+assertions aren't just decoration.
 
 ## Changelog
+
+### v1.8.0
+
+- **New: proper support for dramafren.org's GoodShort player.** The script now
+  drives the player's own SPA machinery instead of reloading the page or
+  falling back to URL navigation: `ended` triggers `goToNextEp()`, which runs
+  its `switchEpisode()` — the next episode is fetched and swapped into the same
+  `<video>`, and the URL is updated via `history.pushState`. No page load, no
+  lost state.
+- **Max quality works again on dramafren.** The player exposes
+  `availableQualities` (the current episode's renditions with signed URLs), a
+  live `hls` instance whose `.url` tells which one is playing, and its own
+  `changeQuality()`. The script picks the highest and switches to it — on the
+  live page it moved a default stream straight to 1080P.
+- **Correct handling of the post-advance quality list.** Right after an
+  in-place advance, `availableQualities` still describes the **old** episode
+  until the player's fetch completes. The script waits for a fresh array
+  before re-applying quality — acting on the stale one would stream the old
+  episode's URLs.
+- Verified live on dramafren's watch page: toggle renders, quality switched to
+  1080P, `ended` advanced episode 5 → 6 in place (same video element,
+  `pushState` URL), playback resumed at 1080p.
+- Five tests added for the dramafren path, including the stale-qualities
+  window. 29 assertions, 0 failed. The suite fails without each of the three
+  adapter pieces (the advance route, the fresh-qualities guard and the
+  quality switch).
+- `shorttw.live` is documented as dead: root serves LiteSpeed's `404 Not
+  Found`, and the `www.` / `goodshort.` subdomains don't exist in DNS.
 
 ### v1.7.0
 

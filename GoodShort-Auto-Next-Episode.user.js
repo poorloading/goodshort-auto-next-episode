@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         GoodShort Auto Next Episode
 // @namespace    https://github.com/poorloading/goodshort-auto-next-episode
-// @version      1.7.0
+// @version      1.8.0
 // @description  Automatically plays the next episode when the current video ends.
 // @author       poorloading
 // @license      MIT
@@ -121,7 +121,13 @@
 
   function applyMaxQuality() {
     if (!MAX_QUALITY || qualitySettled) return;
+    // dramafren's scripted player route, or the generic panel route when
+    // that markup isn't present.
+    if (applyMaxQualityViaPlayer()) return;
+    applyMaxQualityPanel();
+  }
 
+  function applyMaxQualityPanel() {
     const options = Array.from(document.querySelectorAll(QUALITY_OPTION));
 
     if (!options.length) {
@@ -164,15 +170,134 @@
     qualityPanelOpened = false; // the player closes the panel on selection
   }
 
+  // --- dramafren.org player (SPA watch page) ---------------------------------
+  //
+  // The GoodShort player on dramafren is fully scripted rather than a swiper:
+  //   switchEpisode(n) fetches the next episode's stream, swaps it into the
+  //   same <video> and pushStates the new ?ep= URL — no reload at all.
+  //   availableQualities holds the renditions of the CURRENT episode
+  //   ({quality, url} with per-quality signed URLs), and window.hls is the
+  //   live Hls instance whose .url is the rendition actually playing.
+  //   goToNextEp() is the site's own bounds-checked "next episode" action.
+  //
+  // All of it is read lazily through window on every pass: the functions only
+  // exist once the player's inline script has run, and the dramafren markup
+  // must never leak into other mirrors (they keep the panel-clicking route).
+
+  // Array identity of availableQualities as it was when the last in-place
+  // advance was fired. Until the player's fetch swaps in a fresh array, the
+  // list still describes the OLD episode and must not be acted on.
+  let lastAdvanceQualities = null;
+  let waitingForFreshQualities = false;
+
+  function playerApi() {
+    if (typeof window !== 'object' || !window) return null;
+    if (typeof window.switchEpisode !== 'function' || typeof window.goToNextEp !== 'function') return null;
+    if (typeof window.currentEpIdx !== 'number' || typeof window.totalEp !== 'number') return null;
+    return window;
+  }
+
+  function readQualityList() {
+    const qs = window.availableQualities;
+    if (!Array.isArray(qs) || qs.length === 0) return null;
+    return qs.every(q => q && q.quality && q.url) ? qs : null;
+  }
+
+  function bestQualityOf(list) {
+    let best = null;
+    for (const q of list) {
+      if (!best || qualityRank(q.quality) > qualityRank(best.quality)) best = q;
+    }
+    return best;
+  }
+
+  // Returns true when this route took over (settled, applied or gave up), so
+  // the generic panel-clicking route stays out of the way.
+  function applyMaxQualityViaPlayer() {
+    if (!playerApi()) return false;
+    if (qualitySettled) return true;
+
+    const qs = readQualityList();
+    if (waitingForFreshQualities) {
+      if (!qs || qs === lastAdvanceQualities) {
+        retryQuality();
+        return true;
+      }
+      waitingForFreshQualities = false;
+    }
+    if (!qs) {
+      retryQuality();
+      return true;
+    }
+
+    const hls = window.hls;
+    const player = window.videoPlayer;
+    const currentUrl = (hls && hls.url) || (player && player.src) || null;
+    const best = bestQualityOf(qs);
+    const currentEntry = currentUrl ? qs.find(q => q.url === currentUrl) : null;
+
+    if (currentEntry && qualityRank(currentEntry.quality) >= qualityRank(best.quality)) {
+      log('quality already at max (' + currentEntry.quality + ')');
+      qualitySettled = true;
+      return true;
+    }
+
+    if (typeof window.changeQuality !== 'function') {
+      retryQuality();
+      return true;
+    }
+
+    log('quality ' + (currentEntry ? currentEntry.quality : '?') + ' -> ' + best.quality);
+    window.changeQuality(best.url);
+    qualitySettled = true;
+    return true;
+  }
+
+  function advanceInPlaceDramafren() {
+    const w = playerApi();
+    if (!w) return false;
+
+    if (w.currentEpIdx >= w.totalEp - 1) {
+      couldNotAdvance();
+      return true; // handled: don't guess a URL past the end
+    }
+
+    navigating = true;
+    updateButton('Episode ended — loading next…');
+
+    // The next episode arrives at the player's default rendition; quality has
+    // to be re-applied once the fresh list comes in.
+    qualitySettled = false;
+    qualityTries = 0;
+    qualityPanelOpened = false;
+    lastAdvanceQualities = window.availableQualities || null;
+    waitingForFreshQualities = true;
+
+    log('advancing in place via switchEpisode (' + w.currentEpIdx + ' -> ' + (w.currentEpIdx + 1) + ')');
+    w.goToNextEp();
+    ensurePlayingAfterAdvance();
+
+    setTimeout(() => {
+      navigating = false;
+      applyMaxQuality();
+    }, 1200);
+
+    return true;
+  }
+
   // --- advancing in place --------------------------------------------------
 
-  // Every episode is a slide in one swiper, so stepping it moves to the next
-  // episode without a page load: faster, and it keeps whatever player state you
-  // set up yourself, including fullscreen from the site's own button.
+  // Every episode is either a slide in one swiper (reelfren-style markup) or
+  // an entry in dramafren's own scripted episode list. Either way, stepping it
+  // moves to the next episode without a reload: faster, and whatever player
+  // state you set up yourself survives.
   function advanceInPlace() {
     const element = document.querySelector(SWIPER);
     const swiper = element && element.swiper;
-    if (!swiper || typeof swiper.slideNext !== 'function') return false;
+
+    if (!swiper || typeof swiper.slideNext !== 'function') {
+      return advanceInPlaceDramafren();
+    }
 
     const total = swiper.slides ? swiper.slides.length : 0;
     if (total && swiper.activeIndex >= total - 1) {
@@ -428,5 +553,5 @@
     scheduleAttach();
   });
 
-  log('v1.7.0 ready on ' + location.hostname);
+  log('v1.8.0 ready on ' + location.hostname);
 })();

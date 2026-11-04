@@ -102,6 +102,64 @@ function createPage(options = {}) {
         }
         : null;
 
+    // dramafren's scripted player: page-global `var`s and functions. Modelled
+    // so the adapter is genuinely exercised, including the window after an
+    // advance in which the quality list still describes the OLD episode until
+    // the player's fetch completes (clicking then would load stale URLs).
+    const dramafrenCfg = options.dramafren || null;
+
+    function makeQualities(ep) {
+        return [
+            { quality: '720P',  url: 'https://cdn.example/720/tok-ep' + ep },
+            { quality: '540P',  url: 'https://cdn.example/540/tok-ep' + ep },
+            { quality: '1080P', url: 'https://cdn.example/1080/tok-ep' + ep },
+        ];
+    }
+
+    let dIndex = dramafrenCfg ? (dramafrenCfg.ep ?? 0) : 0;
+    const dTotal = dramafrenCfg ? (dramafrenCfg.total ?? 3) : 0;
+    let qualitiesArray = dramafrenCfg ? makeQualities(dIndex) : null;
+    // The player starts at its default rendition (720P in this model).
+    let hlsUrl = dramafrenCfg
+        ? makeQualities(dIndex).find(q => q.quality === (dramafrenCfg.current || '720P')).url
+        : null;
+    let deferredQualities = null;
+    let switchEpisodeCalls = 0;
+    let goToNextEpCalls = 0;
+    const qualityChanges = [];
+
+    function dSwitch(n) {
+        switchEpisodeCalls++;
+        dIndex = n;
+        location.href = location.href.replace(/ep=\d+/, 'ep=' + n);
+        if (dramafrenCfg && dramafrenCfg.deferQualities) {
+            deferredQualities = makeQualities(n);
+            hlsUrl = null; // stream not yet loaded, nothing matches yet
+            return;
+        }
+        qualitiesArray = makeQualities(n);
+        hlsUrl = makeQualities(n)[0].url; // default rendition
+    }
+
+    const dramafrenGlobals = dramafrenCfg
+        ? {
+            get currentEpIdx() { return dIndex; },
+            totalEp: dTotal,
+            get availableQualities() { return qualitiesArray; },
+            videoPlayer: { src: 'blob:dramafren' },
+            get hls() { return hlsUrl ? { url: hlsUrl } : null; },
+            switchEpisode: dSwitch,
+            goToNextEp() {
+                goToNextEpCalls++;
+                if (dIndex < dTotal - 1) dSwitch(dIndex + 1);
+            },
+            changeQuality(url) {
+                qualityChanges.push(url);
+                hlsUrl = url;
+            },
+        }
+        : {};
+
     const swiperElement = swiper ? { swiper } : null;
 
     const document = {
@@ -142,6 +200,10 @@ function createPage(options = {}) {
         addEventListener(name, fn) { addTo(winHandlers, name, fn); },
         removeEventListener(name, fn) { removeFrom(winHandlers, name, fn); },
     };
+    // Copy the dramafren page-globals across, keeping getters live.
+    for (const [key, desc] of Object.entries(Object.getOwnPropertyDescriptors(dramafrenGlobals))) {
+        Object.defineProperty(windowStub, key, desc);
+    }
 
     const sandbox = {
         document,
@@ -180,6 +242,23 @@ function createPage(options = {}) {
             get calls() { return slideNextCalls; },
             get activeIndex() { return activeIndex; },
         },
+        ...(dramafrenCfg ? {
+            dramafren: {
+                get switchCalls() { return switchEpisodeCalls; },
+                get goToNextEpCalls() { return goToNextEpCalls; },
+                get qualityChanges() { return qualityChanges.slice(); },
+                get ep() { return dIndex; },
+                get hlsUrl() { return hlsUrl; },
+                // The player's fetch completing: a brand-new quality array swaps
+                // in and the stream loads its default rendition again.
+                flushQualities() {
+                    if (!deferredQualities) return;
+                    qualitiesArray = deferredQualities;
+                    hlsUrl = deferredQualities[0].url;
+                    deferredQualities = null;
+                },
+            },
+        } : {}),
         // Deliver a document-level gesture or event.
         fireWindow(name) { fireOn(winHandlers, name); },
         // Timers can schedule further timers (the quality retry loop, the
@@ -541,6 +620,106 @@ test('starts playback on a video that has not loaded yet', () => {
     page.flush();
 
     assert(video.playCalls === 1, 'readyState 0 must not block the play attempt, got ' + video.playCalls);
+});
+
+// --- dramafren player (SPA) ---------------------------------------------------
+
+const DRAMA = 'https://goodshort.dramafren.org/?page=watch&id=abc&ep=3';
+
+test('advances dramafren in place via its own switchEpisode, no reload', () => {
+    const video = makeVideo();
+    const page = createPage({
+        videos: [video],
+        href: DRAMA,
+        dramafren: { ep: 3, total: 51 },
+    });
+
+    video.emit('ended');
+
+    assert(page.dramafren.goToNextEpCalls === 1, 'expected one goToNextEp, got ' + page.dramafren.goToNextEpCalls);
+    assert(page.dramafren.switchCalls === 1, 'expected the SPA switch, got ' + page.dramafren.switchCalls);
+    assert(page.dramafren.ep === 4, 'expected episode 4, got ' + page.dramafren.ep);
+    assert(page.location.href === DRAMA.replace('ep=3', 'ep=4'), 'pushState should update the url, got ' + page.location.href);
+});
+
+test('applies max quality on dramafren initial load', () => {
+    const video = makeVideo();
+    const page = createPage({
+        videos: [video],
+        href: DRAMA,
+        dramafren: { ep: 3, total: 51 },
+    });
+
+    page.flush();
+
+    assert(
+        page.dramafren.qualityChanges[page.dramafren.qualityChanges.length - 1] === 'https://cdn.example/1080/tok-ep3',
+        'expected a switch to 1080P, got ' + JSON.stringify(page.dramafren.qualityChanges)
+    );
+    assert(page.dramafren.hlsUrl === 'https://cdn.example/1080/tok-ep3', 'expected hls at 1080P');
+});
+
+test('does nothing on dramafren when already at max quality', () => {
+    const video = makeVideo();
+    const page = createPage({
+        videos: [video],
+        href: DRAMA,
+        dramafren: { ep: 3, total: 51, current: '1080P' },
+    });
+
+    page.flush();
+
+    assert(page.dramafren.qualityChanges.length === 0, 'already at max, no change expected, got ' + JSON.stringify(page.dramafren.qualityChanges));
+});
+
+test('waits for fresh qualities after a dramafren advance before re-applying', () => {
+    const video = makeVideo();
+    const page = createPage({
+        videos: [video],
+        href: DRAMA,
+        dramafren: { ep: 3, total: 51, deferQualities: true },
+    });
+
+    page.flush();
+    const initialChanges = page.dramafren.qualityChanges.length;
+    assert(page.dramafren.qualityChanges[initialChanges - 1] === 'https://cdn.example/1080/tok-ep3', 'initial pass should pick 1080P');
+
+    video.emit('ended');
+    // One round of timers: the re-apply passes see the OLD list and must no-op.
+    page.flush(1);
+
+    // The player's fetch hasn't completed in the stub yet: the list still
+    // describes episode 3, so no quality change may happen.
+    assert(
+        page.dramafren.qualityChanges.length === initialChanges,
+        'must not act on the stale quality list, got ' + JSON.stringify(page.dramafren.qualityChanges)
+    );
+
+    // The fetch completes: the fresh array swaps in, the player loads its
+    // default rendition, and only now may max quality be applied.
+    page.dramafren.flushQualities();
+    page.flush();
+
+    assert(
+        page.dramafren.qualityChanges[page.dramafren.qualityChanges.length - 1] === 'https://cdn.example/1080/tok-ep4',
+        'expected a switch to the NEW episode 1080P, got ' + JSON.stringify(page.dramafren.qualityChanges)
+    );
+});
+
+test('stops at the last dramafren episode instead of advancing', () => {
+    const video = makeVideo();
+    const page = createPage({
+        videos: [video],
+        href: DRAMA.replace('ep=3', 'ep=50'),
+        dramafren: { ep: 50, total: 51 },
+    });
+
+    video.emit('ended');
+
+    assert(page.dramafren.goToNextEpCalls === 0, 'goToNextEp must not run at the last episode');
+    assert(page.dramafren.switchCalls === 0, 'switchEpisode must not run at the last episode');
+    assert(page.location.href === DRAMA.replace('ep=3', 'ep=50'), 'must not navigate, got ' + page.location.href);
+    assert(/Last episode/.test(page.toggle().textContent), 'expected a last-episode message, got ' + page.toggle().textContent);
 });
 
 // --- report ----------------------------------------------------------------
