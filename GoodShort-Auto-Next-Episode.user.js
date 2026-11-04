@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         GoodShort Auto Next Episode
 // @namespace    https://github.com/poorloading/goodshort-auto-next-episode
-// @version      1.5.0
+// @version      1.5.1
 // @description  Automatically plays the next episode when the current video ends.
 // @author       poorloading
 // @license      MIT
@@ -36,6 +36,7 @@
   const QUALITY_OPTION = 'button.quality-option';
   const PLAYER_SECTION = 'section.phone-player';
   const SWIPER = '.watch-swiper';
+  const FS_BUTTON = 'button[aria-label="Full Screen"]';
 
   const log = (...args) => { if (DEBUG) console.log('[auto-next]', ...args); };
 
@@ -84,6 +85,7 @@
   let qualitySettled = false;
   let qualityPanelOpened = false;
   let fsArmed = false;
+  let fsEnter = null;
 
   // --- toggles -------------------------------------------------------------
 
@@ -219,6 +221,21 @@
 
   // --- fullscreen ----------------------------------------------------------
 
+  // There is one <section class="phone-player"> per episode — 36 of them on a
+  // 36-episode series — and only the active one holds a <video>. Fullscreening
+  // the first match therefore shows an empty player: a black screen. Start from
+  // the video and walk up to the player that actually owns it.
+  function fullscreenTarget() {
+    const video = document.querySelector('video');
+    const owner = video && video.closest ? video.closest(PLAYER_SECTION) : null;
+    if (owner) return owner;
+
+    const active = document.querySelector('.swiper-slide-active ' + PLAYER_SECTION);
+    if (active) return active;
+
+    return document.querySelector(PLAYER_SECTION) || document.documentElement;
+  }
+
   // Browsers only grant fullscreen on a fresh user gesture, so this can never
   // be silent: it arms a one-shot listener and enters fullscreen on the next
   // click, key press or tap.
@@ -229,14 +246,20 @@
     if (!isWatchPage(new URL(location.href))) return;
     fsArmed = true;
 
-    const enter = () => {
-      document.removeEventListener('pointerdown', enter, true);
-      document.removeEventListener('keydown', enter, true);
-      document.removeEventListener('touchstart', enter, true);
-      fsArmed = false;
+    const enter = (event) => {
+      // If the gesture was on the site's own fullscreen button, let the site do
+      // it. Handling it here too would enter and immediately exit, since its
+      // click handler toggles based on the same state.
+      const target = event && event.target;
+      if (target && target.closest && target.closest(FS_BUTTON)) {
+        disarmFullscreen();
+        return;
+      }
+
+      disarmFullscreen();
 
       if (!fullscreenWanted || document.fullscreenElement) return;
-      const player = document.querySelector(PLAYER_SECTION) || document.documentElement;
+      const player = fullscreenTarget();
       if (!player.requestFullscreen) return;
 
       const attempt = player.requestFullscreen();
@@ -246,10 +269,20 @@
       log('entering fullscreen');
     };
 
+    fsEnter = enter;
     document.addEventListener('pointerdown', enter, true);
     document.addEventListener('keydown', enter, true);
     document.addEventListener('touchstart', enter, true);
     log('auto-fullscreen armed');
+  }
+
+  function disarmFullscreen() {
+    fsArmed = false;
+    if (!fsEnter) return;
+    document.removeEventListener('pointerdown', fsEnter, true);
+    document.removeEventListener('keydown', fsEnter, true);
+    document.removeEventListener('touchstart', fsEnter, true);
+    fsEnter = null;
   }
 
   // --- advancing in place --------------------------------------------------
@@ -280,6 +313,7 @@
 
     log('advancing in place to slide ' + (swiper.activeIndex + 1));
     swiper.slideNext();
+    ensurePlayingAfterAdvance();
 
     // The slide and its player take a moment to swap in.
     setTimeout(() => {
@@ -398,12 +432,14 @@
   // after the user paused it.
   const playAttempts = new WeakMap();
 
-  function tryPlay(video) {
-    if (!enabled || !video.paused || video.readyState < 2) return;
+  // How long after an advance to keep nudging playback along. The new episode
+  // mounts paused, and the quality re-apply swaps its stream — which resets it
+  // to paused at 0 again. A loaded, paused video paints nothing, so the player
+  // just looks black until something calls play().
+  const PLAY_RETRY_MS = [400, 1000, 2000, 3200];
 
-    const media = video.currentSrc || video.src || '';
-    if (playAttempts.get(video) === media) return; // already had its go
-    playAttempts.set(video, media);
+  function startPlayback(video) {
+    if (!enabled || !video.paused) return;
 
     const attempt = video.play();
     if (!attempt || typeof attempt.catch !== 'function') return;
@@ -415,6 +451,35 @@
         .then(() => unmuteOnNextGesture(video))
         .catch(() => updateButton('Press Play to start (browser blocked autoplay)'));
     });
+  }
+
+  function tryPlay(video) {
+    if (!enabled || !video.paused) return;
+
+    // Not readyState: a freshly mounted episode sits at readyState 0 until
+    // something calls play(), so gating on readiness deadlocked here. Having a
+    // source is the only thing that actually matters.
+    const media = video.currentSrc || video.src || '';
+    if (!media) return;
+    if (playAttempts.get(video) === media) return; // already had its go
+    playAttempts.set(video, media);
+
+    startPlayback(video);
+  }
+
+  // Belt and braces for the gap between the slide changing and the new stream
+  // being playable: neither the DOM observer nor the media events reliably fire
+  // in between, and the quality swap resets playback after they would have.
+  function ensurePlayingAfterAdvance() {
+    for (const delay of PLAY_RETRY_MS) {
+      setTimeout(() => {
+        if (!enabled) return;
+        const video = document.querySelector('video');
+        if (!video || !video.paused) return;
+        log('nudging playback after advance (' + delay + 'ms)');
+        startPlayback(video);
+      }, delay);
+    }
   }
 
   function attachVideo() {
@@ -447,6 +512,7 @@
       attachedVideos.add(video);
       video.addEventListener('ended', nextEpisode);
       video.addEventListener('loadedmetadata', () => tryPlay(video));
+      video.addEventListener('loadeddata', () => tryPlay(video));
       video.addEventListener('canplay', () => tryPlay(video));
 
       // Backup for players that never emit `ended`. A seek is ignored, so
@@ -488,5 +554,5 @@
     scheduleAttach();
   });
 
-  log('v1.5.0 ready on ' + location.hostname);
+  log('v1.5.1 ready on ' + location.hostname);
 })();

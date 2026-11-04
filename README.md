@@ -211,6 +211,14 @@ fraction of a second after you hit it. The attempt is remembered against
 `video.currentSrc`, so a genuinely new episode still gets its own autoplay, while
 a pause you made on purpose survives every DOM change.
 
+The precondition is a source, not a `readyState`. A freshly mounted episode sits at
+`readyState 0` until something calls `play()` — gating on readiness deadlocked, and
+a loaded-but-paused video paints nothing, so the player looked black. After an
+advance, playback is also nudged a few times over the next three seconds
+(`PLAY_RETRY_MS`) and stops as soon as the video is actually running. That covers
+the quality re-apply, which swaps the stream and resets the video to paused at 0
+*after* the DOM has settled.
+
 `navigating` is cleared on `pageshow` and `popstate`, so a back/forward navigation
 can't leave the script stuck. Video listeners are tracked in a `WeakSet`, so a
 `<video>` element is never wired twice and the tracking is garbage-collected with
@@ -238,6 +246,17 @@ The practical effect: with the toggle on, the next click or key press anywhere p
 you fullscreen, and in-place advancing keeps you there across episodes. Turning the
 toggle on mid-episode arms it straight away, so it takes effect on your next click
 rather than at the next reload.
+
+The target is resolved from the video, not from the page: there is one
+`<section class="phone-player">` per episode — 36 of them on a 36-episode series —
+and only the active one holds a `<video>`. Fullscreening
+`querySelector('section.phone-player')` therefore goes fullscreen on episode 1's
+empty placeholder, i.e. a black screen. `video.closest('section.phone-player')` picks
+the one that is actually playing.
+
+If the gesture lands on the site's own `Full Screen` button, the script stands down
+and lets the site handle it: both read the same state, so handling it in both places
+would enter fullscreen and immediately exit again.
 
 If a mirror has no carousel — `advanceInPlace()` returns false — the script falls
 back to a real navigation, and that will exit fullscreen no matter what, because
@@ -267,8 +286,9 @@ the page is genuinely reloading.
 - **Auto-fullscreen needs a gesture, and a reload ends it.** No userscript can
   enter fullscreen silently — that's a browser rule, not a bug here. It also can't
   survive a page navigation, so it only holds across episode changes when the site
-  advances in place. This could not be verified in an embedded browser (fullscreen
-  requests never settle there); it needs a real Chrome session to confirm.
+  advances in place. Fullscreen entry itself could not be exercised in an embedded
+  browser (requests never settle there) and needs a real Chrome session; that the
+  script picks the player holding the video, rather than an empty one, is verified.
 - **The quality bump relies on the player's own menu.** It looks for
   `button[aria-label="Quality"]` and `button.quality-option`. Verified on
   reelfren's player; if another mirror's player labels those differently, quality
@@ -301,7 +321,7 @@ manager, no npm dependencies:
 node test/auto-next.test.js
 ```
 
-32 assertions covering:
+34 assertions covering:
 
 - following the site's own next-episode link
 - the `ep` increment fallback when no link is rendered
@@ -325,14 +345,48 @@ node test/auto-next.test.js
 - auto-fullscreen: arming without a gesture, entering on the next one, not asking
   twice when already fullscreen, doing nothing while switched off, staying out of it
   off a watch page, and the toggle persisting
-- playback: a pause surviving another attach pass, and new media still getting its
-  own autoplay
+- playback: a pause surviving another attach pass, new media still getting its own
+  autoplay, a new episode being started despite mounting paused at `readyState 0`,
+  and a video that has not loaded yet still getting a play attempt
+- fullscreen target selection: the stub models the real page's 36 player sections
+  with only the active one holding a video, so resolving "the first section on the
+  page" fails the suite
 
 The suite is checked by mutation as well as by passing: removing the autoplay
-guard, the in-place advance, the fullscreen arming or the quality reset each makes
-its tests fail, so the assertions aren't just decoration.
+guard, the in-place advance, the fullscreen arming, the quality reset, the playback
+nudge or the `readyState` fix each makes its tests fail, so the assertions aren't
+just decoration.
 
 ## Changelog
+
+### v1.5.1
+
+- **Fixed: black screen when auto-fullscreen kicked in.** A watch page carries one
+  `<section class="phone-player">` per episode — 36 of them on a 36-episode series —
+  and only the active one holds a `<video>`. v1.5.0 fullscreened
+  `document.querySelector('section.phone-player')`, which is episode 1's empty
+  placeholder, so the browser went fullscreen onto a player with nothing in it.
+  The target now comes from the video itself
+  (`video.closest('section.phone-player')`), with the active slide as a fallback.
+- **Fixed: black screen after auto-advancing.** The new episode mounts paused at
+  `currentTime` 0, and the quality re-apply then swaps its stream, resetting it to
+  paused at 0 again. A loaded-but-paused video paints nothing, so the player looked
+  black. Both halves fixed:
+  - `tryPlay()` required `readyState >= 2`, but a freshly mounted episode sits at
+    `readyState 0` until something calls `play()` — a deadlock. Having a source is
+    now the only precondition.
+  - Playback is nudged over the three seconds after an advance, stopping as soon as
+    the video is running, which covers the quality swap that happens after the DOM
+    has settled.
+- **Fullscreen no longer fights the site's own button.** If the gesture is on
+  `button[aria-label="Full Screen"]`, the script stands down. Both sides read the
+  same state, so handling it twice would enter fullscreen and immediately exit.
+- Verified live on reelfren: `ended` → episode 6 in place, playback resumed after
+  ~1.3s and stayed at 1080p, and the fullscreen target resolves to the section that
+  actually contains the video while the old selector resolves to an empty one.
+- Two tests added: a new episode that mounts paused and unloaded still gets started,
+  and a video at `readyState 0` still gets its play attempt. The fullscreen stub now
+  models 36 player sections with only the active one holding the video.
 
 ### v1.5.0
 

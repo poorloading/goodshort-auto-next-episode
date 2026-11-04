@@ -64,7 +64,13 @@ function createPage(options = {}) {
     }
 
     const documentElement = fullscreenTarget('documentElement');
+
+    // A real watch page carries one <section class="phone-player"> per episode,
+    // and only the active one holds a <video>. Modelling both is the whole point:
+    // fullscreening "the first player on the page" gives an empty one, i.e. a
+    // black screen, and that bug must fail the suite.
     const playerSection = options.noPlayer ? null : fullscreenTarget('player');
+    const firstSection = options.noPlayer ? null : fullscreenTarget('first-in-dom');
 
     // The player's quality menu: a trigger that toggles a panel of options.
     // Modelled so the "pick the highest rendition" logic is actually exercised.
@@ -108,6 +114,17 @@ function createPage(options = {}) {
                     activeQuality = swiperConfig.fallbackQuality || '720p';
                     panelOpen = false;
                 }
+                // A real player mounts the new episode paused at t=0, at
+                // readyState 0, and only starts loading once something calls
+                // play(). Modelling that is what catches a black screen.
+                if (swiperConfig.resetPlaybackOnAdvance) {
+                    videos.forEach(v => {
+                        v.paused = true;
+                        v.readyState = 0;
+                        v.currentTime = 0;
+                        v.currentSrc = 'https://cdn.example/episode' + (activeIndex + 1) + '.m3u8';
+                    });
+                }
             },
         }
         : null;
@@ -143,13 +160,23 @@ function createPage(options = {}) {
         querySelector(selector) {
             if (selector === 'button[aria-label="Quality"]') return qualityTrigger;
             if (selector === 'video') return videos[0] || null;
-            if (selector === 'section.phone-player') return playerSection;
+            // The plain selector resolves to the first match in DOM order, which
+            // on a real page is episode 1's empty placeholder.
+            if (selector === 'section.phone-player') return firstSection;
+            if (selector === '.swiper-slide-active section.phone-player') return playerSection;
             if (selector === '.watch-swiper') return swiperElement;
             return null;
         },
         addEventListener(name, fn) { addTo(docHandlers, name, fn); },
         removeEventListener(name, fn) { removeFrom(docHandlers, name, fn); },
     };
+
+    // A video knows which player owns it, same as Element.closest.
+    videos.forEach(video => {
+        if (typeof video.closest !== 'function') {
+            video.closest = sel => (sel === 'section.phone-player' ? playerSection : null);
+        }
+    });
 
     const windowStub = {
         addEventListener(name, fn) { addTo(winHandlers, name, fn); },
@@ -637,6 +664,36 @@ test('autoplays again once the episode actually changes', () => {
     page.flush();
 
     assert(video.playCalls === 2, 'new media should get its own autoplay, got ' + video.playCalls);
+});
+
+test('starts the new episode even though it mounts paused and unloaded', () => {
+    const video = makeVideo({ readyState: 2, src: 'https://cdn.example/episode5.m3u8' });
+    const page = createPage({
+        videos: [video],
+        href: REEL + '?ep=5&lang=en',
+        swiper: { slides: 36, activeIndex: 4, resetPlaybackOnAdvance: true },
+    });
+
+    page.flush();
+    assert(video.playCalls === 1, 'the first episode should autoplay, got ' + video.playCalls);
+
+    video.emit('ended');
+    assert(video.paused === true, 'the new episode mounts paused');
+    assert(video.readyState === 0, 'the new episode mounts unloaded');
+
+    page.flush();
+
+    assert(video.playCalls === 2, 'expected exactly one nudge to start it, got ' + video.playCalls);
+    assert(video.paused === false, 'the new episode should be playing, not black');
+});
+
+test('starts playback on a video that has not loaded yet', () => {
+    const video = makeVideo({ readyState: 0, src: 'https://cdn.example/episode1.m3u8' });
+    const page = createPage({ videos: [video] });
+
+    page.flush();
+
+    assert(video.playCalls === 1, 'readyState 0 must not block the play attempt, got ' + video.playCalls);
 });
 
 // --- report ----------------------------------------------------------------
